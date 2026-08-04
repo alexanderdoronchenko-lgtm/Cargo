@@ -27,6 +27,14 @@ _TIER_PRICES = {
 }
 
 
+def _tier_name(tier: str, lang: str) -> str:
+    return t(_TIER_NAME_KEYS[tier], lang)
+
+
+def _format_date(expires_at: str) -> str:
+    return expires_at.split(" ")[0]
+
+
 def _tier_keyboard(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -48,29 +56,86 @@ def _tier_keyboard(lang: str) -> InlineKeyboardMarkup:
 
 @router.message(Command("subscribe"))
 async def cmd_subscribe(message: Message) -> None:
+    telegram_id = message.from_user.id
     lang = await database.get_or_create_user(
-        message.from_user.id, message.from_user.username, message.from_user.language_code
+        telegram_id, message.from_user.username, message.from_user.language_code
     )
-    await message.answer(t("subscribe_prompt", lang), reply_markup=_tier_keyboard(lang))
+
+    active = await subscription_service.get_active_subscription(telegram_id)
+    if active is not None:
+        active_tier, expires_at = active
+        prompt = t(
+            "subscribe_prompt_active",
+            lang,
+            tier=_tier_name(active_tier, lang),
+            expires_at=_format_date(expires_at),
+        )
+    else:
+        prompt = t("subscribe_prompt", lang)
+
+    await message.answer(prompt, reply_markup=_tier_keyboard(lang))
 
 
 @router.callback_query(F.data.in_({"subscribe:ruby", "subscribe:emerald"}))
 async def cb_subscribe(callback: CallbackQuery) -> None:
     tier = callback.data.split(":", 1)[1]
+    telegram_id = callback.from_user.id
     lang = await database.get_or_create_user(
-        callback.from_user.id, callback.from_user.username, callback.from_user.language_code
+        telegram_id, callback.from_user.username, callback.from_user.language_code
     )
-    tier_name = t(_TIER_NAME_KEYS[tier], lang)
+    tier_name = _tier_name(tier, lang)
 
-    await callback.bot.send_invoice(
-        chat_id=callback.from_user.id,
-        title=t("invoice_title", lang, tier=tier_name),
-        description=t(
+    # Check for an existing subscription before purchase — a live check
+    # (not the daily-synced users.subscription_tier) so it's accurate right
+    # up to the moment of payment.
+    active = await subscription_service.get_active_subscription(telegram_id)
+
+    if active is not None:
+        active_tier, expires_at = active
+
+        if subscription_service.TIER_ORDER[tier] < subscription_service.TIER_ORDER[active_tier]:
+            # Buying a lower tier than what's active would replace it and
+            # reset the 30-day period — a straight downgrade nobody should
+            # pay for. Block it instead of silently sending an invoice.
+            await callback.answer(
+                t(
+                    "subscribe_downgrade_blocked",
+                    lang,
+                    current_tier=_tier_name(active_tier, lang),
+                    expires_at=_format_date(expires_at),
+                ),
+                show_alert=True,
+            )
+            return
+
+        if tier == active_tier:
+            description = t(
+                "invoice_description_renew",
+                lang,
+                tier=tier_name,
+                expires_at=_format_date(expires_at),
+                days=subscription_service.SUBSCRIPTION_DURATION_DAYS,
+            )
+        else:
+            description = t(
+                "invoice_description_upgrade",
+                lang,
+                tier=tier_name,
+                current_tier=_tier_name(active_tier, lang),
+                days=subscription_service.SUBSCRIPTION_DURATION_DAYS,
+            )
+    else:
+        description = t(
             "invoice_description",
             lang,
             tier=tier_name,
             days=subscription_service.SUBSCRIPTION_DURATION_DAYS,
-        ),
+        )
+
+    await callback.bot.send_invoice(
+        chat_id=telegram_id,
+        title=t("invoice_title", lang, tier=tier_name),
+        description=description,
         payload=f"subscription:{tier}",
         currency="XTR",
         prices=[LabeledPrice(label=tier_name, amount=_TIER_PRICES[tier])],
@@ -93,7 +158,7 @@ async def process_successful_payment(message: Message) -> None:
     lang = await database.get_or_create_user(
         message.from_user.id, message.from_user.username, message.from_user.language_code
     )
-    tier_name = t(_TIER_NAME_KEYS[tier], lang)
+    tier_name = _tier_name(tier, lang)
     await message.answer(
         t(
             "subscription_activated",

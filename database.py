@@ -142,6 +142,22 @@ async def set_user_tier(telegram_id: int, tier: str) -> None:
         await db.commit()
 
 
+async def get_active_subscription(telegram_id: int) -> aiosqlite.Row | None:
+    """Live check against expires_at — unlike users.subscription_tier, this
+    can't be stale between daily expiry-job runs.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT tier, expires_at FROM subscriptions
+            WHERE telegram_id = ? AND expires_at > datetime('now')
+            """,
+            (telegram_id,),
+        )
+        return await cursor.fetchone()
+
+
 async def upsert_subscription(telegram_id: int, tier: str, expires_at: str) -> None:
     """Activates or upgrades a subscription — one active period per user,
     never two in parallel.
