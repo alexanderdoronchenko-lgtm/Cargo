@@ -8,6 +8,12 @@ from services import usage_service
 
 router = Router()
 
+_TIER_NAME_KEYS = {
+    usage_service.TIER_FREE: "tier_free",
+    usage_service.TIER_RUBY: "tier_ruby",
+    usage_service.TIER_EMERALD: "tier_emerald",
+}
+
 
 @router.message(Command("balance"))
 async def cmd_balance(message: Message) -> None:
@@ -15,9 +21,11 @@ async def cmd_balance(message: Message) -> None:
     lang = await database.get_or_create_user(
         telegram_id, message.from_user.username, message.from_user.language_code
     )
-    is_premium = await database.get_user_premium(telegram_id)
-    remaining = await usage_service.get_remaining_analyses(telegram_id, is_premium)
-    limit = usage_service.daily_limit(is_premium)
+    tier = await database.get_user_tier(telegram_id)
+    remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
+    limit = usage_service.daily_limit(tier)
+    tier_name = t(_TIER_NAME_KEYS.get(tier, "tier_free"), lang)
 
-    key = "balance_premium" if is_premium else "balance_free"
-    await message.answer(t(key, lang, remaining=remaining, limit=limit))
+    await message.answer(
+        t("balance_status", lang, remaining=remaining, limit=limit, tier=tier_name)
+    )

@@ -36,12 +36,10 @@ def _truncate_caption(text: str) -> str:
 
 async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> None:
     telegram_id = message.from_user.id
-    is_premium = await database.get_user_premium(telegram_id)
-    remaining = await usage_service.get_remaining_analyses(telegram_id, is_premium)
+    tier = await database.get_user_tier(telegram_id)
+    remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
     if remaining <= 0:
-        await message.answer(
-            t("limit_exceeded", lang, limit=usage_service.daily_limit(is_premium))
-        )
+        await message.answer(t("limit_exceeded", lang, limit=usage_service.daily_limit(tier)))
         return
 
     await message.answer(t("game_received", lang, count=count_moves(game)))

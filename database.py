@@ -4,13 +4,16 @@ import aiosqlite
 import config
 from locales import DEFAULT_LANG, resolve_lang
 
+_DEFAULT_TIER = "free"
+
 _SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER UNIQUE NOT NULL,
     username TEXT,
     language TEXT NOT NULL DEFAULT '{DEFAULT_LANG}',
-    is_premium INTEGER NOT NULL DEFAULT 0,
+    subscription_tier TEXT NOT NULL DEFAULT '{_DEFAULT_TIER}'
+        CHECK (subscription_tier IN ('free', 'ruby', 'emerald')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -46,6 +49,17 @@ CREATE TABLE IF NOT EXISTS token_usage (
 async def init_db() -> None:
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.executescript(_SCHEMA)
+
+        # Upgrade a users table created before the subscription_tier column
+        # existed (previously just a boolean is_premium flag).
+        cursor = await db.execute("PRAGMA table_info(users)")
+        columns = {row[1] async for row in cursor}
+        if "subscription_tier" not in columns:
+            await db.execute(
+                f"ALTER TABLE users ADD COLUMN subscription_tier TEXT NOT NULL "
+                f"DEFAULT '{_DEFAULT_TIER}'"
+            )
+
         await db.commit()
 
 
@@ -85,13 +99,13 @@ async def set_user_language(telegram_id: int, language: str) -> None:
         await db.commit()
 
 
-async def get_user_premium(telegram_id: int) -> bool:
+async def get_user_tier(telegram_id: int) -> str:
     async with aiosqlite.connect(config.DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT is_premium FROM users WHERE telegram_id = ?", (telegram_id,)
+            "SELECT subscription_tier FROM users WHERE telegram_id = ?", (telegram_id,)
         )
         row = await cursor.fetchone()
-        return bool(row[0]) if row is not None else False
+        return row[0] if row is not None else _DEFAULT_TIER
 
 
 async def log_usage(telegram_id: int, action_type: str) -> None:
