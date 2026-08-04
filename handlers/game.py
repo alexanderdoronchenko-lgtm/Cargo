@@ -3,7 +3,14 @@ from aiogram.types import Message
 
 import database
 from locales import t
-from services.chess_service import count_moves, detect_platform, extract_url, parse_pgn
+from services.chess_service import (
+    GameFetchError,
+    count_moves,
+    detect_platform,
+    extract_url,
+    fetch_game_by_url,
+    parse_pgn,
+)
 
 router = Router()
 
@@ -43,10 +50,20 @@ async def handle_pgn_text(message: Message) -> None:
         platform = detect_platform(url)
         if platform is None:
             await message.answer(t("link_unsupported", lang))
-        else:
-            # TODO: call services.chess_service.fetch_game_by_url(url, platform)
-            # once game download via the platform API is implemented.
-            await message.answer(t("link_detected", lang, platform=platform))
+            return
+
+        try:
+            pgn_text = await fetch_game_by_url(url, platform)
+        except GameFetchError as exc:
+            await message.answer(t(f"game_fetch_error_{exc.reason}", lang))
+            return
+
+        game = parse_pgn(pgn_text)
+        if game is None:
+            await message.answer(t("game_parse_error", lang))
+            return
+
+        await message.answer(t("game_received", lang, count=count_moves(game)))
         return
 
     game = parse_pgn(text)

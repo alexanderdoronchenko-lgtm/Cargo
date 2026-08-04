@@ -5,6 +5,10 @@
   "language_changed": "Language switched to English.",
   "game_received": "Game received, moves: {count}",
   "game_parse_error": "Could not recognize the game. Please send a PGN file, PGN text, or a link to a game on chess.com/lichess.org.",
-  "link_detected": "Detected a link to {platform}. Downloading the game from a link isn't implemented yet — that will be added in the next step.",
-  "link_unsupported": "This link wasn't recognized as chess.com or lichess.org."
+  "link_unsupported": "This link wasn't recognized as chess.com or lichess.org.",
+  "game_fetch_error_invalid_link": "Couldn't parse the game link.",
+  "game_fetch_error_not_found": "Game not found.",
+  "game_fetch_error_private": "This game is private and can't be accessed.",
+  "game_fetch_error_unsupported": "Couldn't get the moves for this game: the service returned an unsupported response format.",
+  "game_fetch_error_network": "Couldn't reach the service. Please try again later."
 }

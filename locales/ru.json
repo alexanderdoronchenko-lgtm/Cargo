@@ -5,6 +5,10 @@
   "language_changed": "Язык переключён на русский.",
   "game_received": "Партия получена, ходов: {count}",
   "game_parse_error": "Не удалось распознать партию. Пришлите PGN-файл, текст в формате PGN или ссылку на партию с chess.com/lichess.org.",
-  "link_detected": "Обнаружена ссылка на {platform}. Скачивание партии по ссылке пока не реализовано — это будет добавлено на следующем шаге.",
-  "link_unsupported": "Эта ссылка не распознана как chess.com или lichess.org."
+  "link_unsupported": "Эта ссылка не распознана как chess.com или lichess.org.",
+  "game_fetch_error_invalid_link": "Не удалось разобрать ссылку на партию.",
+  "game_fetch_error_not_found": "Партия не найдена.",
+  "game_fetch_error_private": "Эта партия приватная — доступ к ней закрыт.",
+  "game_fetch_error_unsupported": "Не удалось получить ходы этой партии: сервис вернул неподдерживаемый формат ответа.",
+  "game_fetch_error_network": "Не удалось связаться с сервисом. Попробуйте ещё раз позже."
 }
