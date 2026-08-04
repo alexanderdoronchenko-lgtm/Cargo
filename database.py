@@ -30,6 +30,16 @@ CREATE TABLE IF NOT EXISTS usage (
     action_type TEXT NOT NULL,
     FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
 );
+
+CREATE TABLE IF NOT EXISTS token_usage (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    input_tokens INTEGER NOT NULL,
+    output_tokens INTEGER NOT NULL,
+    cached_tokens INTEGER NOT NULL,
+    FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+);
 """
 
 
@@ -105,6 +115,20 @@ async def count_usage_last_24h(telegram_id: int, action_type: str) -> int:
         )
         row = await cursor.fetchone()
         return row[0]
+
+
+async def log_token_usage(
+    telegram_id: int, input_tokens: int, output_tokens: int, cached_tokens: int
+) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO token_usage (telegram_id, input_tokens, output_tokens, cached_tokens)
+            VALUES (?, ?, ?, ?)
+            """,
+            (telegram_id, input_tokens, output_tokens, cached_tokens),
+        )
+        await db.commit()
 
 
 async def save_analysis(telegram_id: int, request_text: str, result_text: str) -> None:

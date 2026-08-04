@@ -4,6 +4,7 @@ written in the style captured by chess_style_corpus.md, via the Claude API
 """
 import functools
 import json
+from dataclasses import dataclass
 
 import config
 from services.claude_service import client
@@ -42,7 +43,11 @@ def _build_system_prompt() -> list[dict]:
         {
             "type": "text",
             "text": _load_style_corpus(),
-            "cache_control": {"type": "ephemeral"},
+            # Requests are infrequent across a day, so the default 5-minute
+            # TTL would constantly expire between different users' games.
+            # 1h keeps it warm across the day's traffic (write costs 2x
+            # instead of 1.25x, but pays off after ~3 reads within the hour).
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
         },
     ]
 
@@ -55,10 +60,10 @@ def _format_moments(moments: list[CriticalMoment]) -> str:
     for m in moments:
         side = "белые" if m.side == "white" else "чёрные"
         lines.append(
-            f"- Ход {m.move_number} ({side}): сыграно `{m.move_san}`, "
-            f"лучший ход по движку — `{m.best_move_san}`. "
-            f"Оценка до хода: {m.score_before_cp:+d} сп, после: {m.score_after_cp:+d} сп "
-            f"(потеря {m.cp_loss} сп)."
+            f"- Ход {m.move_number} ({side}): контекст `{m.context_san}`; "
+            f"критический ход — `{m.move_san}`, лучший ход по движку — "
+            f"`{m.best_move_san}`. Оценка до хода: {m.score_before_cp:+d} сп, "
+            f"после: {m.score_after_cp:+d} сп (потеря {m.cp_loss} сп)."
         )
     return "\n".join(lines)
 
@@ -84,13 +89,38 @@ _EXPLANATIONS_SCHEMA = {
     "additionalProperties": False,
 }
 
+# Calibrated against chess_style_corpus.md: 39 per-move annotations, average
+# 72.9 characters, approximated at ~2.5 chars/token for Cyrillic text (a
+# conservative ratio — the real Claude tokenizer usually does a bit better)
+# -> ~29 tokens/annotation, +20% headroom -> ~35. Recalibrate precisely with
+# `scripts/calibrate_caption_tokens.py` (uses the real tokenizer via
+# messages.count_tokens) once a real ANTHROPIC_API_KEY is available.
+_AVG_EXPLANATION_TOKENS_WITH_HEADROOM = 35
+_JSON_OVERHEAD_PER_MOMENT = 20  # field names + punctuation for one array item
+_JSON_WRAPPER_OVERHEAD = 10  # the {"moments": [...]} envelope
+_MIN_MAX_TOKENS = 150
+
+
+def _calibrated_max_tokens(moment_count: int) -> int:
+    per_moment = _AVG_EXPLANATION_TOKENS_WITH_HEADROOM + _JSON_OVERHEAD_PER_MOMENT
+    return max(_MIN_MAX_TOKENS, _JSON_WRAPPER_OVERHEAD + per_moment * moment_count)
+
+
+@dataclass
+class TokenUsage:
+    input_tokens: int
+    output_tokens: int
+    cached_tokens: int
+
 
 async def generate_moment_explanations(
     critical_moments: list[CriticalMoment], language: str
-) -> list[str]:
-    """Returns one Telegram-ready Markdown explanation per critical moment, in order."""
+) -> tuple[list[str], TokenUsage]:
+    """Returns one Telegram-ready Markdown explanation per critical moment (in
+    order), plus the token usage actually billed for the call.
+    """
     if not critical_moments:
-        return []
+        return [], TokenUsage(0, 0, 0)
 
     lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
 
@@ -110,7 +140,12 @@ async def generate_moment_explanations(
 
     response = await client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=16000,
+        max_tokens=_calibrated_max_tokens(len(critical_moments)),
+        # This is formulaic style-mimicry, not a reasoning task, and the tight
+        # max_tokens above has no headroom for unpredictable thinking spend —
+        # disabling it keeps the budget entirely for the visible JSON output
+        # (and avoids paying for thinking tokens at all).
+        thinking={"type": "disabled"},
         output_config={
             "effort": "medium",
             "format": {"type": "json_schema", "schema": _EXPLANATIONS_SCHEMA},
@@ -120,9 +155,24 @@ async def generate_moment_explanations(
     )
 
     text = next(block.text for block in response.content if block.type == "text")
-    data = json.loads(text)
+    try:
+        data = json.loads(text)
+        explanations_by_key = {
+            (item["move_number"], item["side"]): item["explanation"] for item in data["moments"]
+        }
+    except (json.JSONDecodeError, KeyError, TypeError):
+        # A response cut off mid-JSON (tight max_tokens, longer-than-usual
+        # explanations) shouldn't crash the whole review — fall back to the
+        # per-moment default caption in the handler instead.
+        explanations_by_key = {}
 
-    explanations = {
-        (item["move_number"], item["side"]): item["explanation"] for item in data["moments"]
-    }
-    return [explanations.get((m.move_number, m.side), "") for m in critical_moments]
+    explanations = [
+        explanations_by_key.get((m.move_number, m.side), "") for m in critical_moments
+    ]
+
+    usage = TokenUsage(
+        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_tokens=response.usage.cache_read_input_tokens,
+    )
+    return explanations, usage

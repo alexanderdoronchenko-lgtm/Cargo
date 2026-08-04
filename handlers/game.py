@@ -14,7 +14,7 @@ from services.chess_service import (
     parse_pgn,
 )
 from services.commentary_service import generate_moment_explanations
-from services.engine_service import EngineError, analyze_game
+from services.engine_service import EngineError, analyze_game, select_top_moments
 from services import usage_service
 
 router = Router()
@@ -59,7 +59,12 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
         await message.answer(t("no_critical_moments", lang))
         return
 
-    explanations = await generate_moment_explanations(critical_moments, lang)
+    critical_moments = select_top_moments(critical_moments)
+
+    explanations, token_usage = await generate_moment_explanations(critical_moments, lang)
+    await database.log_token_usage(
+        telegram_id, token_usage.input_tokens, token_usage.output_tokens, token_usage.cached_tokens
+    )
 
     for moment, explanation in zip(critical_moments, explanations):
         caption = explanation.strip() or t(
