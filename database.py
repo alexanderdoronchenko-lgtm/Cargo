@@ -2,12 +2,14 @@
 import aiosqlite
 
 import config
+from locales import DEFAULT_LANG, resolve_lang
 
-_SCHEMA = """
+_SCHEMA = f"""
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER UNIQUE NOT NULL,
     username TEXT,
+    language TEXT NOT NULL DEFAULT '{DEFAULT_LANG}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -28,14 +30,38 @@ async def init_db() -> None:
         await db.commit()
 
 
-async def upsert_user(telegram_id: int, username: str | None) -> None:
+async def get_or_create_user(
+    telegram_id: int, username: str | None, language_code: str | None
+) -> str:
+    """Returns the user's stored language, creating the row on first contact."""
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT language FROM users WHERE telegram_id = ?", (telegram_id,)
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            await db.execute(
+                "UPDATE users SET username = ? WHERE telegram_id = ?",
+                (username, telegram_id),
+            )
+            await db.commit()
+            return row["language"]
+
+        language = resolve_lang(language_code)
+        await db.execute(
+            "INSERT INTO users (telegram_id, username, language) VALUES (?, ?, ?)",
+            (telegram_id, username, language),
+        )
+        await db.commit()
+        return language
+
+
+async def set_user_language(telegram_id: int, language: str) -> None:
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.execute(
-            """
-            INSERT INTO users (telegram_id, username) VALUES (?, ?)
-            ON CONFLICT(telegram_id) DO UPDATE SET username = excluded.username
-            """,
-            (telegram_id, username),
+            "UPDATE users SET language = ? WHERE telegram_id = ?",
+            (language, telegram_id),
         )
         await db.commit()
 

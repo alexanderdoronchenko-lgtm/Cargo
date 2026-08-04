@@ -1,8 +1,12 @@
 from aiogram import Router
 
 from handlers.start import router as start_router
-from handlers.analysis import router as analysis_router
+from handlers.help import router as help_router
+from handlers.language import router as language_router
+from handlers.game import router as game_router
 
 main_router = Router()
 main_router.include_router(start_router)
-main_router.include_router(analysis_router)
+main_router.include_router(help_router)
+main_router.include_router(language_router)
+main_router.include_router(game_router)

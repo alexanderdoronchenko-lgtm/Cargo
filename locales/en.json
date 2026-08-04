@@ -1,0 +1,10 @@
+{
+  "start_greeting": "Hi! I'm a chess game analysis bot.\n\nSend me a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org — I'll parse the moves.\n\nSee /help for the full list of commands.",
+  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
+  "language_prompt": "Choose your interface language:",
+  "language_changed": "Language switched to English.",
+  "game_received": "Game received, moves: {count}",
+  "game_parse_error": "Could not recognize the game. Please send a PGN file, PGN text, or a link to a game on chess.com/lichess.org.",
+  "link_detected": "Detected a link to {platform}. Downloading the game from a link isn't implemented yet — that will be added in the next step.",
+  "link_unsupported": "This link wasn't recognized as chess.com or lichess.org."
+}
