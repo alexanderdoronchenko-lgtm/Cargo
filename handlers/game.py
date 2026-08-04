@@ -57,6 +57,14 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
         await message.answer(t("no_critical_moments", lang))
         return
 
+    # Logged for /progress (all moments, not just the ones sent to Claude
+    # below) so a month's worth of weaknesses can be tracked even for games
+    # with more blunders than fit in one review.
+    for moment in critical_moments:
+        await usage_service.record_critical_moment(
+            telegram_id, moment.move_number, moment.move_san, moment.context_san, moment.cp_loss
+        )
+
     critical_moments = select_top_moments(critical_moments)
 
     explanations, token_usage = await generate_moment_explanations(critical_moments, lang)

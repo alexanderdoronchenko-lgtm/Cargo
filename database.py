@@ -31,6 +31,10 @@ CREATE TABLE IF NOT EXISTS usage (
     telegram_id INTEGER NOT NULL,
     timestamp TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     action_type TEXT NOT NULL,
+    move_number INTEGER,
+    move_san TEXT,
+    context_san TEXT,
+    cp_loss INTEGER,
     FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
 );
 
@@ -67,6 +71,19 @@ async def init_db() -> None:
                 f"ALTER TABLE users ADD COLUMN subscription_tier TEXT NOT NULL "
                 f"DEFAULT '{_DEFAULT_TIER}'"
             )
+
+        # Upgrade a usage table created before per-moment columns existed
+        # (previously just telegram_id/timestamp/action_type).
+        cursor = await db.execute("PRAGMA table_info(usage)")
+        usage_columns = {row[1] async for row in cursor}
+        for column, column_type in (
+            ("move_number", "INTEGER"),
+            ("move_san", "TEXT"),
+            ("context_san", "TEXT"),
+            ("cp_loss", "INTEGER"),
+        ):
+            if column not in usage_columns:
+                await db.execute(f"ALTER TABLE usage ADD COLUMN {column} {column_type}")
 
         await db.commit()
 
@@ -161,11 +178,21 @@ async def expire_subscriptions() -> int:
         return cursor.rowcount
 
 
-async def log_usage(telegram_id: int, action_type: str) -> None:
+async def log_usage(
+    telegram_id: int,
+    action_type: str,
+    move_number: int | None = None,
+    move_san: str | None = None,
+    context_san: str | None = None,
+    cp_loss: int | None = None,
+) -> None:
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.execute(
-            "INSERT INTO usage (telegram_id, action_type) VALUES (?, ?)",
-            (telegram_id, action_type),
+            """
+            INSERT INTO usage (telegram_id, action_type, move_number, move_san, context_san, cp_loss)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (telegram_id, action_type, move_number, move_san, context_san, cp_loss),
         )
         await db.commit()
 
@@ -182,6 +209,29 @@ async def count_usage_last_24h(telegram_id: int, action_type: str) -> int:
         )
         row = await cursor.fetchone()
         return row[0]
+
+
+async def get_critical_moments_since(
+    telegram_id: int, action_type: str, days: int, limit: int = 150
+) -> list[aiosqlite.Row]:
+    """Returns up to `limit` of the user's most recent logged moments from
+    the last `days` days, oldest first.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT move_number, move_san, context_san, cp_loss, timestamp
+            FROM usage
+            WHERE telegram_id = ? AND action_type = ?
+              AND timestamp >= datetime('now', ?)
+            ORDER BY timestamp DESC, id DESC
+            LIMIT ?
+            """,
+            (telegram_id, action_type, f"-{days} days", limit),
+        )
+        rows = await cursor.fetchall()
+        return list(reversed(rows))
 
 
 async def log_token_usage(

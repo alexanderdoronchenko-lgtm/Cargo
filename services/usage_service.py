@@ -2,6 +2,7 @@
 import database
 
 ACTION_ANALYSIS = "game_analysis"
+ACTION_CRITICAL_MOMENT = "critical_moment"
 
 TIER_FREE = "free"
 TIER_RUBY = "ruby"
@@ -27,3 +28,16 @@ async def get_remaining_analyses(telegram_id: int, tier: str) -> int:
 
 async def record_analysis(telegram_id: int) -> None:
     await database.log_usage(telegram_id, ACTION_ANALYSIS)
+
+
+async def record_critical_moment(
+    telegram_id: int, move_number: int, move_san: str, context_san: str, cp_loss: int
+) -> None:
+    await database.log_usage(
+        telegram_id,
+        ACTION_CRITICAL_MOMENT,
+        move_number=move_number,
+        move_san=move_san,
+        context_san=context_san,
+        cp_loss=cp_loss,
+    )

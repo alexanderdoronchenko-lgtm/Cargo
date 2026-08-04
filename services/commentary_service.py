@@ -36,7 +36,7 @@ def _load_style_corpus() -> str:
     return _CORPUS_PATH.read_text(encoding="utf-8")
 
 
-def _build_system_prompt() -> list[dict]:
+def build_system_prompt() -> list[dict]:
     return [
         {"type": "text", "text": _ROLE_PROMPT},
         {"type": "text", "text": _STYLE_INSTRUCTIONS},
@@ -150,7 +150,7 @@ async def generate_moment_explanations(
             "effort": "medium",
             "format": {"type": "json_schema", "schema": _EXPLANATIONS_SCHEMA},
         },
-        system=_build_system_prompt(),
+        system=build_system_prompt(),
         messages=[{"role": "user", "content": user_prompt}],
     )
 
