@@ -1,3 +1,5 @@
+import html
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -29,4 +31,8 @@ async def cmd_progress(message: Message) -> None:
     await message.answer(t("progress_analyzing", lang))
 
     summary = await progress_service.summarize_weaknesses(moments, lang)
-    await message.answer(f"{t('progress_header', lang)}\n\n{summary}")
+    # No formatting is requested from Claude here (plain text), but the
+    # message still goes out under parse_mode=HTML — escape defensively so
+    # an incidental "<", ">" or "&" in the model's prose can't be misparsed
+    # as markup and reject the send.
+    await message.answer(f"{t('progress_header', lang)}\n\n{html.escape(summary)}")

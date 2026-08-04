@@ -16,6 +16,7 @@ from services.chess_service import (
 from services.commentary_service import generate_moment_explanations
 from services.engine_service import EngineError, analyze_game, select_top_moments
 from services import usage_service
+from telegram_format import markdown_to_html, truncate_html
 
 router = Router()
 
@@ -26,12 +27,6 @@ async def _get_lang(message: Message) -> str:
     return await database.get_or_create_user(
         message.from_user.id, message.from_user.username, message.from_user.language_code
     )
-
-
-def _truncate_caption(text: str) -> str:
-    if len(text) <= _MAX_CAPTION_LENGTH:
-        return text
-    return text[: _MAX_CAPTION_LENGTH - 1].rstrip() + "…"
 
 
 async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> None:
@@ -83,7 +78,7 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
         photo_bytes = render_position_png(moment.fen_after, moment.move_uci)
         await message.answer_photo(
             BufferedInputFile(photo_bytes, filename="position.png"),
-            caption=_truncate_caption(caption),
+            caption=truncate_html(markdown_to_html(caption), _MAX_CAPTION_LENGTH),
         )
 
 
