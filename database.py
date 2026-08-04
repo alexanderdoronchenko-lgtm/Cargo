@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS token_usage (
     cached_tokens INTEGER NOT NULL,
     FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
 );
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER UNIQUE NOT NULL,
+    tier TEXT NOT NULL CHECK (tier IN ('ruby', 'emerald')),
+    expires_at TEXT NOT NULL,
+    FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+);
 """
 
 
@@ -106,6 +114,51 @@ async def get_user_tier(telegram_id: int) -> str:
         )
         row = await cursor.fetchone()
         return row[0] if row is not None else _DEFAULT_TIER
+
+
+async def set_user_tier(telegram_id: int, tier: str) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET subscription_tier = ? WHERE telegram_id = ?",
+            (tier, telegram_id),
+        )
+        await db.commit()
+
+
+async def upsert_subscription(telegram_id: int, tier: str, expires_at: str) -> None:
+    """Activates or upgrades a subscription — one active period per user,
+    never two in parallel.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            """
+            INSERT INTO subscriptions (telegram_id, tier, expires_at) VALUES (?, ?, ?)
+            ON CONFLICT(telegram_id) DO UPDATE SET
+                tier = excluded.tier,
+                expires_at = excluded.expires_at
+            """,
+            (telegram_id, tier, expires_at),
+        )
+        await db.commit()
+
+
+async def expire_subscriptions() -> int:
+    """Downgrades every user whose subscription has lapsed back to the free
+    tier. Returns how many users were downgraded.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute(
+            f"""
+            UPDATE users
+            SET subscription_tier = '{_DEFAULT_TIER}'
+            WHERE subscription_tier != '{_DEFAULT_TIER}'
+              AND telegram_id IN (
+                  SELECT telegram_id FROM subscriptions WHERE expires_at <= datetime('now')
+              )
+            """
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 async def log_usage(telegram_id: int, action_type: str) -> None:

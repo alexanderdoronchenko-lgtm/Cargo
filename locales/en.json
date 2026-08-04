@@ -1,6 +1,6 @@
 {
   "start_greeting": "Hi! I'm a chess game analysis bot.\n\nSend me a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org — I'll parse the moves.\n\nSee /help for the full list of commands.",
-  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n/balance — today's remaining game analyses\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
+  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n/balance — today's remaining game analyses\n/subscribe — subscribe or upgrade your plan\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
   "language_prompt": "Choose your interface language:",
   "language_changed": "Language switched to English.",
   "game_received": "Game received, moves: {count}",
@@ -19,5 +19,11 @@
   "balance_status": "Game analyses left today: {remaining} of {limit}.\nCurrent plan: {tier}.",
   "tier_free": "Free",
   "tier_ruby": "Ruby",
-  "tier_emerald": "Emerald"
+  "tier_emerald": "Emerald",
+  "subscribe_prompt": "Choose a subscription plan:",
+  "subscribe_button_ruby": "Ruby — {price} Stars/mo",
+  "subscribe_button_emerald": "Emerald — {price} Stars/mo",
+  "invoice_title": "\"{tier}\" subscription",
+  "invoice_description": "\"{tier}\" subscription for {days} days — a higher daily game analysis limit.",
+  "subscription_activated": "\"{tier}\" subscription activated for {days} days. See /balance for your updated limit."
 }
