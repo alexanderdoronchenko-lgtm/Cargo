@@ -27,6 +27,8 @@ class CriticalMoment:
     score_before_cp: int
     score_after_cp: int
     cp_loss: int
+    move_uci: str  # the played move, for rendering an arrow on the board
+    fen_after: str  # position right after the played move
 
 
 def _score_cp(score: chess.engine.PovScore, color: chess.Color) -> int:
@@ -79,6 +81,8 @@ async def analyze_game(
                         score_before_cp=score_before,
                         score_after_cp=score_after,
                         cp_loss=cp_loss,
+                        move_uci=move.uci(),
+                        fen_after=board.fen(),
                     )
                 )
     finally:

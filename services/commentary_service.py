@@ -1,7 +1,9 @@
-"""Turns a game's critical moments into a Telegram-ready review, written in the
-style captured by chess_style_corpus.md, via the Claude API (model: claude-sonnet-5).
+"""Turns a game's critical moments into per-moment Telegram-ready explanations,
+written in the style captured by chess_style_corpus.md, via the Claude API
+(model: claude-sonnet-5).
 """
 import functools
+import json
 
 import config
 from services.claude_service import client
@@ -61,26 +63,66 @@ def _format_moments(moments: list[CriticalMoment]) -> str:
     return "\n".join(lines)
 
 
-async def generate_game_review(critical_moments: list[CriticalMoment], language: str) -> str:
-    """Returns Telegram-ready Markdown text reviewing the game's critical moments."""
+_EXPLANATIONS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "moments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "move_number": {"type": "integer"},
+                    "side": {"type": "string", "enum": ["white", "black"]},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["move_number", "side", "explanation"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["moments"],
+    "additionalProperties": False,
+}
+
+
+async def generate_moment_explanations(
+    critical_moments: list[CriticalMoment], language: str
+) -> list[str]:
+    """Returns one Telegram-ready Markdown explanation per critical moment, in order."""
+    if not critical_moments:
+        return []
+
     lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
 
     user_prompt = (
         "Вот критические моменты партии (ходы, где потеря в оценке по движку "
-        f"превысила 100 сантипешек):\n\n{_format_moments(critical_moments)}\n\n"
-        "Разбери эти моменты в своей манере — тон, длина фраз, обороты речи, как в "
-        f"примерах выше. Ответь на языке: {lang_name}, сохраняя тот же стиль и манеру "
-        "объяснения, что в примерах выше, даже если примеры на другом языке. Будь по "
-        "существу, без длинных вступлений — как в примерах. Используй Markdown-разметку, "
+        f"превысила 100 сантипешек), по порядку:\n\n{_format_moments(critical_moments)}\n\n"
+        "Для КАЖДОГО момента напиши отдельное объяснение в своей манере — тон, "
+        "обороты речи, баланс похвалы и критики, как в примерах выше. Это будет "
+        "подпись под картинкой позиции в Telegram, поэтому объяснение должно быть "
+        "коротким — 1-3 предложения по существу, без вступлений. "
+        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру объяснения, что "
+        "в примерах выше, даже если примеры на другом языке. Используй Markdown-разметку, "
         "поддерживаемую Telegram: **жирный** для акцентов, `код` для нотации ходов "
-        "(например, `Qxf6`). Не используй заголовки, таблицы или другую разметку."
+        "(например, `Qxf6`). Не используй заголовки или таблицы. Верни ровно один "
+        "объект на каждый момент из списка выше, в том же порядке."
     )
 
     response = await client.messages.create(
         model=config.CLAUDE_MODEL,
         max_tokens=16000,
-        output_config={"effort": "medium"},
+        output_config={
+            "effort": "medium",
+            "format": {"type": "json_schema", "schema": _EXPLANATIONS_SCHEMA},
+        },
         system=_build_system_prompt(),
         messages=[{"role": "user", "content": user_prompt}],
     )
-    return "".join(block.text for block in response.content if block.type == "text")
+
+    text = next(block.text for block in response.content if block.type == "text")
+    data = json.loads(text)
+
+    explanations = {
+        (item["move_number"], item["side"]): item["explanation"] for item in data["moments"]
+    }
+    return [explanations.get((m.move_number, m.side), "") for m in critical_moments]

@@ -1,8 +1,10 @@
+import chess.pgn
 from aiogram import F, Router
-from aiogram.types import Message
+from aiogram.types import BufferedInputFile, Message
 
 import database
 from locales import t
+from services.board_image_service import render_position_png
 from services.chess_service import (
     GameFetchError,
     count_moves,
@@ -11,14 +13,55 @@ from services.chess_service import (
     fetch_game_by_url,
     parse_pgn,
 )
+from services.commentary_service import generate_moment_explanations
+from services.engine_service import EngineError, analyze_game
 
 router = Router()
+
+_MAX_CAPTION_LENGTH = 1024
 
 
 async def _get_lang(message: Message) -> str:
     return await database.get_or_create_user(
         message.from_user.id, message.from_user.username, message.from_user.language_code
     )
+
+
+def _truncate_caption(text: str) -> str:
+    if len(text) <= _MAX_CAPTION_LENGTH:
+        return text
+    return text[: _MAX_CAPTION_LENGTH - 1].rstrip() + "…"
+
+
+async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> None:
+    await message.answer(t("game_received", lang, count=count_moves(game)))
+    await message.answer(t("analyzing", lang))
+
+    try:
+        critical_moments = await analyze_game(game)
+    except EngineError:
+        await message.answer(t("engine_error", lang))
+        return
+
+    if not critical_moments:
+        await message.answer(t("no_critical_moments", lang))
+        return
+
+    explanations = await generate_moment_explanations(critical_moments, lang)
+
+    for moment, explanation in zip(critical_moments, explanations):
+        caption = explanation.strip() or t(
+            "moment_fallback_caption",
+            lang,
+            move_number=moment.move_number,
+            move_san=moment.move_san,
+            cp_loss=moment.cp_loss,
+        )
+        photo_bytes = render_position_png(moment.fen_after, moment.move_uci)
+        await message.answer_photo(
+            BufferedInputFile(photo_bytes, filename="position.png"),
+            caption=_truncate_caption(caption),
+        )
 
 
 @router.message(F.document)
@@ -37,7 +80,7 @@ async def handle_pgn_file(message: Message) -> None:
         await message.answer(t("game_parse_error", lang))
         return
 
-    await message.answer(t("game_received", lang, count=count_moves(game)))
+    await _send_review(message, lang, game)
 
 
 @router.message(F.text)
@@ -63,7 +106,7 @@ async def handle_pgn_text(message: Message) -> None:
             await message.answer(t("game_parse_error", lang))
             return
 
-        await message.answer(t("game_received", lang, count=count_moves(game)))
+        await _send_review(message, lang, game)
         return
 
     game = parse_pgn(text)
@@ -71,4 +114,4 @@ async def handle_pgn_text(message: Message) -> None:
         await message.answer(t("game_parse_error", lang))
         return
 
-    await message.answer(t("game_received", lang, count=count_moves(game)))
+    await _send_review(message, lang, game)

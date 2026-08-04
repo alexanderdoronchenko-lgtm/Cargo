@@ -10,5 +10,9 @@
   "game_fetch_error_not_found": "Game not found.",
   "game_fetch_error_private": "This game is private and can't be accessed.",
   "game_fetch_error_unsupported": "Couldn't get the moves for this game: the service returned an unsupported response format.",
-  "game_fetch_error_network": "Couldn't reach the service. Please try again later."
+  "game_fetch_error_network": "Couldn't reach the service. Please try again later.",
+  "analyzing": "Analyzing the game with the engine, this may take a moment...",
+  "engine_error": "Couldn't analyze the game with the engine. Please try again later.",
+  "no_critical_moments": "No critical mistakes (loss over 100 centipawns) found — the game was played evenly.",
+  "moment_fallback_caption": "Move {move_number}: `{move_san}` (loss {cp_loss} cp)."
 }
