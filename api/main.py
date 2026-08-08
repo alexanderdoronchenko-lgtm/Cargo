@@ -4,8 +4,10 @@ users/subscriptions/puzzles tables.
 
 Run with: uvicorn api.main:app --reload --port 8000
 """
+import json
 import random
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import aiosqlite
 import chess
@@ -28,6 +30,19 @@ _WEAKNESS_WINDOW_DAYS = 30
 
 # Streak freeze — Diamond-only.
 _STREAK_FREEZE_TIERS = {"diamond"}
+
+# Opening trainer — Emerald/Diamond only.
+_OPENING_TRAINER_TIERS = {"emerald", "diamond"}
+_OPENINGS_PATH = Path(__file__).resolve().parent.parent / "data" / "openings.json"
+_openings_cache: dict | None = None
+
+
+def _load_openings() -> dict:
+    global _openings_cache
+    if _openings_cache is None:
+        with open(_OPENINGS_PATH, encoding="utf-8") as f:
+            _openings_cache = json.load(f)
+    return _openings_cache
 
 
 async def _get_tier(user_id: int) -> str:
@@ -171,3 +186,16 @@ async def puzzle_solved(user_id: int = Query(...)):
         freeze_available=freeze_eligible and database.is_streak_freeze_available(row["streak_freeze_used_at"]),
         freeze_applied=freeze_applied,
     )
+
+
+@app.get("/api/openings")
+async def openings(user_id: int = Query(...)):
+    """Emerald/Diamond only, enforced here rather than just hidden in the
+    UI — an ineligible request never gets the repertoire content itself,
+    not just a locked-looking screen.
+    """
+    tier = await _get_tier(user_id)
+    if tier not in _OPENING_TRAINER_TIERS:
+        raise HTTPException(403, "Opening trainer requires Emerald tier or higher")
+
+    return _load_openings()

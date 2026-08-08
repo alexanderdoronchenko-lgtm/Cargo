@@ -53,3 +53,51 @@ Columns: `PuzzleId,FEN,Moves,Rating,RatingDeviation,Popularity,NbPlays,Themes,Ga
 
 To import: `python scripts/import_puzzles.py` (safe to re-run — existing
 puzzle_ids are left untouched, so this only adds the newly-added rows).
+
+# openings.json
+
+Repertoire tree for the Opening Trainer tab (Emerald/Diamond only — see
+`api/main.py`'s `/api/openings`). The file below is a small worked example
+that establishes the format; replace it with a real repertoire whenever
+one's ready — no code changes needed, `api/main.py` just reads whatever's
+in this file at startup.
+
+Shape:
+
+```json
+{
+  "openings": [
+    {
+      "side": "white",
+      "name": "Итальянская партия",
+      "moves": ["e4", "e5", "Nf3", "Nc6", "Bc4"],
+      "comment": "Классическое развитие слона на активную позицию.",
+      "children": [ /* same shape, recursively */ ]
+    }
+  ]
+}
+```
+
+- Top level is a list of independent repertoire trees — one per opening
+  you've prepared, for either color.
+- `side`: `"white"` or `"black"` — only meaningful at the root of each
+  tree (inherited by everything under it); determines which color's moves
+  the trainer quizzes you on and which color the board is oriented for.
+  Whose move a given ply actually is gets worked out from the position
+  itself (chess.js `turn()`), not from parity of the array index, so
+  there's no bookkeeping to get right when writing moves — just write the
+  game in order.
+- `moves`: SAN moves (`"Nf3"`, `"O-O"`, `"exd4"`, `"Bb4+"`) continuing
+  straight on from wherever the parent node left off — not the full line
+  from the start, and not annotated (`"e4!"`/`"Qh5?!"` etc. get stripped
+  at trainer runtime if present, but plain SAN is cleaner going in).
+- `comment`: shown on a wrong move, alongside the correct one — explain
+  the *idea*, not just the move, since that's what actually gets
+  remembered.
+- `children`: forks — different tries by the opponent that all continue
+  from the position after this node's `moves`. A leaf (`children: []` or
+  omitted) is where a line's prepared depth ends; the trainer treats
+  reaching one as "Вариант пройден" and offers a fresh random line next.
+  When a node *does* have children, the trainer picks one at random each
+  time it gets there — you don't know in advance which of the opponent's
+  tries you'll be quizzed on, same as a real game.

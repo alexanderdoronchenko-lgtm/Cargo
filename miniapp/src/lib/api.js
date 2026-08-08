@@ -55,3 +55,25 @@ export async function recordPuzzleSolved(userId) {
   }
   return response.json();
 }
+
+/**
+ * Emerald/Diamond only — the backend never sends the repertoire content to
+ * an ineligible user, it just 403s. That 403 is surfaced here as
+ * `error.status = 403` so the page can show the upsell stub instead of a
+ * generic error.
+ * @returns {Promise<{openings: Array}>}
+ */
+export async function fetchOpenings(userId) {
+  const url = new URL('/api/openings', BASE_URL);
+  if (userId != null) {
+    url.searchParams.set('user_id', userId);
+  }
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    const error = new Error(`Openings fetch failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return response.json();
+}
