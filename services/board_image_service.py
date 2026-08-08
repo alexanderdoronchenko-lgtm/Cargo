@@ -6,8 +6,9 @@ import chess
 import chess.svg
 
 _BOARD_SIZE = 400
-_ARROW_COLOR = "#cc0000cc"
-_FILL_COLOR = "#cc0000aa"
+# Terracotta — matches --color-accent-terracotta in miniapp/theme.css.
+_ARROW_COLOR = "#C1502Ecc"
+_FILL_COLOR = "#C1502Eaa"
 
 
 def render_position_png(fen_after: str, move_uci: str) -> bytes:
