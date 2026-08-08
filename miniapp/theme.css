@@ -58,9 +58,12 @@
   --color-tier-diamond: #8ECFE0;
   --color-tier-diamond-soft: #1B2B30;
 
-  /* Typography */
-  --font-heading: 'Fraunces', Georgia, 'Iowan Old Style', serif;
-  --font-body: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  /* Typography — PT Serif/PT Sans over Georgia/Inter defaults because the
+     interface is bilingual (ru/en) and both are designed with native
+     Cyrillic coverage; Fraunces (an earlier draft) has none. Same pairing
+     shown in the identity preview. */
+  --font-heading: 'PT Serif', Georgia, serif;
+  --font-body: 'PT Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --font-mono: 'JetBrains Mono', 'IBM Plex Mono', 'SFMono-Regular', Consolas, monospace;
 
   /* Radii / elevation, tuned to the rounded-square app icon */
