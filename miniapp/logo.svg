@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 150" width="100" height="150" role="img" aria-label="Critical Moment logo">
+  <title>Critical Moment</title>
+  <desc>A chess knight on its pedestal, its mane and brow-marks doubling as the "!!" annotation used for a critical move.</desc>
+
+  <path fill="#C1502E" d="
+    M 10 150 L 90 150 L 82 136 L 18 136 Z
+  "/>
+  <path fill-rule="evenodd" fill="#C1502E" d="
+    M 24 136
+    L 16 100
+    L 18 80
+    L 23 66
+    L 27 62
+    L 20 58
+    L 25 52
+    L 20 48
+    L 4 54
+    L 21 43
+    L 30 30
+    L 40 26
+    L 46 27
+    L 48 27
+    L 58 4
+    L 54 34
+    L 70 16
+    L 66 42
+    L 74 70
+    L 78 100
+    L 78 136
+    Z
+    M 25 38 a 3.5 3.5 0 1 0 0.1 0 Z
+  "/>
+  <path d="M 20 136 L 80 136" stroke="#1C1310" stroke-width="3" stroke-linecap="round" fill="none"/>
+  <circle cx="54" cy="46" r="5.5" fill="#F2E9E4"/>
+  <circle cx="67" cy="54" r="5.5" fill="#F2E9E4"/>
+</svg>
