@@ -25,3 +25,33 @@ export async function fetchRandomPuzzle(ratingMin, ratingMax, userId) {
   }
   return response.json();
 }
+
+/**
+ * @returns {Promise<{solved_today: number, streak_days: number, freeze_available: boolean, freeze_applied: boolean}>}
+ */
+export async function fetchPuzzleStats(userId) {
+  const url = new URL('/api/puzzle/stats', BASE_URL);
+  url.searchParams.set('user_id', userId);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Puzzle stats fetch failed: ${response.status}`);
+  }
+  return response.json();
+}
+
+/**
+ * Records a genuine solve (not a revealed solution) — updates today's
+ * count and the streak server-side.
+ * @returns {Promise<{solved_today: number, streak_days: number, freeze_available: boolean, freeze_applied: boolean}>}
+ */
+export async function recordPuzzleSolved(userId) {
+  const url = new URL('/api/puzzle/solved', BASE_URL);
+  url.searchParams.set('user_id', userId);
+
+  const response = await fetch(url, { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`Puzzle solved recording failed: ${response.status}`);
+  }
+  return response.json();
+}

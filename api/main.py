@@ -26,6 +26,18 @@ _TARGETED_SELECTION_TIERS = {"emerald", "diamond"}
 _TARGETED_SELECTION_PROBABILITY = 0.6
 _WEAKNESS_WINDOW_DAYS = 30
 
+# Streak freeze — Diamond-only.
+_STREAK_FREEZE_TIERS = {"diamond"}
+
+
+async def _get_tier(user_id: int) -> str:
+    """Live check against subscriptions, same as everywhere else tier
+    gates a feature — users.subscription_tier is a cache that can lag up
+    to 24h behind an actual expiry.
+    """
+    active = await database.get_active_subscription(user_id)
+    return active["tier"] if active is not None else "free"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -41,7 +53,7 @@ app = FastAPI(title="Critical Moment Mini App API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST"],
     allow_headers=["*"],
 )
 
@@ -94,8 +106,7 @@ async def random_puzzle(
     targeted_category = None
 
     if user_id is not None:
-        active = await database.get_active_subscription(user_id)
-        tier = active["tier"] if active is not None else "free"
+        tier = await _get_tier(user_id)
         targeted_available = tier in _TARGETED_SELECTION_TIERS
         if targeted_available:
             row, targeted_category = await _pick_targeted_puzzle(user_id, rating_min, rating_max)
@@ -116,4 +127,47 @@ async def random_puzzle(
         themes=row["themes"].split() if row["themes"] else [],
         targeted_category=targeted_category,
         targeted_available=targeted_available,
+    )
+
+
+class PuzzleStatsResponse(BaseModel):
+    solved_today: int
+    streak_days: int
+    # Diamond and a freeze hasn't been used in the last 30 days — shown as
+    # the 🛡️ hint so the user knows a missed day won't cost them right now.
+    freeze_available: bool
+    # True only on the specific /puzzle/solved call whose streak update
+    # actually bridged a missed day with a freeze.
+    freeze_applied: bool = False
+
+
+@app.get("/api/puzzle/stats", response_model=PuzzleStatsResponse)
+async def puzzle_stats(user_id: int = Query(...)):
+    tier = await _get_tier(user_id)
+    row = await database.get_latest_puzzle_stats(user_id)
+
+    today = database.today_str()
+    solved_today = row["solved_count"] if row is not None and row["date"] == today else 0
+    streak_days = row["streak_days"] if row is not None else 0
+    freeze_used_at = row["streak_freeze_used_at"] if row is not None else None
+
+    return PuzzleStatsResponse(
+        solved_today=solved_today,
+        streak_days=streak_days,
+        freeze_available=tier in _STREAK_FREEZE_TIERS and database.is_streak_freeze_available(freeze_used_at),
+    )
+
+
+@app.post("/api/puzzle/solved", response_model=PuzzleStatsResponse)
+async def puzzle_solved(user_id: int = Query(...)):
+    tier = await _get_tier(user_id)
+    freeze_eligible = tier in _STREAK_FREEZE_TIERS
+
+    row, freeze_applied = await database.record_puzzle_solved(user_id, freeze_eligible)
+
+    return PuzzleStatsResponse(
+        solved_today=row["solved_count"],
+        streak_days=row["streak_days"],
+        freeze_available=freeze_eligible and database.is_streak_freeze_available(row["streak_freeze_used_at"]),
+        freeze_applied=freeze_applied,
     )

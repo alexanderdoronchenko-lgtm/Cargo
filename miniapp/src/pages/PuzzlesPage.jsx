@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
 import Board from '../components/Board';
-import { fetchRandomPuzzle } from '../lib/api';
+import { fetchRandomPuzzle, fetchPuzzleStats, recordPuzzleSolved } from '../lib/api';
 import { getPuzzleRating, getSearchWindow, updatePuzzleRating } from '../lib/puzzleRating';
 import { getTelegramUser } from '../lib/telegram';
 
@@ -24,6 +24,16 @@ function applyUci(fen, uci) {
   return game.fen();
 }
 
+// Russian day-count pluralization: 1 день, 2-4 дня, 5-20 дней, 21 день, ...
+function pluralizeDays(n) {
+  const mod10 = n % 10;
+  const mod100 = n % 100;
+  if (mod100 >= 11 && mod100 <= 14) return 'дней';
+  if (mod10 === 1) return 'день';
+  if (mod10 >= 2 && mod10 <= 4) return 'дня';
+  return 'дней';
+}
+
 export default function PuzzlesPage() {
   const [status, setStatus] = useState('loading'); // loading | playing | failed | solved | error
   const [playerRating, setPlayerRating] = useState(() => getPuzzleRating());
@@ -32,6 +42,7 @@ export default function PuzzlesPage() {
   const [solutionIndex, setSolutionIndex] = useState(0);
   const [wrongSquares, setWrongSquares] = useState(null);
   const [solvedByUser, setSolvedByUser] = useState(true);
+  const [streakStats, setStreakStats] = useState(null);
   const ratingScoredRef = useRef(false);
   const userIdRef = useRef(getTelegramUser()?.id);
 
@@ -53,6 +64,11 @@ export default function PuzzlesPage() {
 
   useEffect(() => {
     loadPuzzle(playerRating);
+    if (userIdRef.current != null) {
+      fetchPuzzleStats(userIdRef.current)
+        .then(setStreakStats)
+        .catch(() => {});
+    }
     // Only on mount — subsequent loads are explicit (next puzzle / retry).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -65,6 +81,13 @@ export default function PuzzlesPage() {
     },
     [playerRating, puzzle],
   );
+
+  const recordSolve = useCallback(() => {
+    if (userIdRef.current == null) return;
+    recordPuzzleSolved(userIdRef.current)
+      .then(setStreakStats)
+      .catch(() => {});
+  }, []);
 
   const handleMove = useCallback(
     (from, to) => {
@@ -82,6 +105,7 @@ export default function PuzzlesPage() {
           setSolvedByUser(true);
           setStatus('solved');
           scoreAttempt(true);
+          recordSolve();
           return;
         }
 
@@ -97,6 +121,7 @@ export default function PuzzlesPage() {
             setSolvedByUser(true);
             setStatus('solved');
             scoreAttempt(true);
+            recordSolve();
           }
         }, REPLY_DELAY_MS);
         return;
@@ -108,7 +133,7 @@ export default function PuzzlesPage() {
       setWrongSquares({ [from]: true, [to]: true });
       setStatus('failed');
     },
-    [status, puzzle, fen, solutionIndex, scoreAttempt],
+    [status, puzzle, fen, solutionIndex, scoreAttempt, recordSolve],
   );
 
   const revealSolution = useCallback(() => {
@@ -152,6 +177,24 @@ export default function PuzzlesPage() {
           разборе. Сложность подстраивается под тебя: решил — следующая чуть сложнее, ошибся —
           чуть проще.
         </p>
+
+        {streakStats && (
+          <div className="mt-3 flex items-center justify-between font-mono text-xs">
+            <span className="flex items-center gap-1 text-ink">
+              {streakStats.streak_days > 0 ? (
+                <>
+                  🔥 {streakStats.streak_days} {pluralizeDays(streakStats.streak_days)} подряд
+                  {streakStats.freeze_available && (
+                    <span title="Заморозка доступна, если пропустишь день">🛡️</span>
+                  )}
+                </>
+              ) : (
+                <span className="text-ink-muted">Начни серию — реши первую задачку сегодня</span>
+              )}
+            </span>
+            <span className="text-ink-muted">Сегодня решено: {streakStats.solved_today}</span>
+          </div>
+        )}
       </header>
 
       <div className="flex items-center justify-between font-mono text-xs text-ink-muted">

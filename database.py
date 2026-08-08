@@ -1,5 +1,6 @@
 """SQLite access layer built on aiosqlite."""
 import random
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -70,6 +71,17 @@ CREATE TABLE IF NOT EXISTS puzzles (
 );
 
 CREATE INDEX IF NOT EXISTS idx_puzzles_rating ON puzzles (rating);
+
+CREATE TABLE IF NOT EXISTS puzzle_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    telegram_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    solved_count INTEGER NOT NULL DEFAULT 0,
+    streak_days INTEGER NOT NULL DEFAULT 0,
+    streak_freeze_used_at TEXT,
+    UNIQUE (telegram_id, date),
+    FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+);
 """
 
 
@@ -463,3 +475,115 @@ async def get_random_puzzle_by_tags(
             width = hi - lo
             lo, hi = lo - width, hi + width
         return None
+
+
+# Diamond-only: a missed day doesn't reset the streak if the last freeze was
+# used at least this many days ago.
+STREAK_FREEZE_COOLDOWN_DAYS = 30
+
+
+def today_str() -> str:
+    return datetime.now(timezone.utc).date().isoformat()
+
+
+def is_streak_freeze_available(freeze_used_at: str | None) -> bool:
+    if freeze_used_at is None:
+        return True
+    last_used = datetime.fromisoformat(freeze_used_at[:10]).date()
+    today = datetime.now(timezone.utc).date()
+    return (today - last_used).days >= STREAK_FREEZE_COOLDOWN_DAYS
+
+
+async def get_latest_puzzle_stats(telegram_id: int) -> aiosqlite.Row | None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM puzzle_stats WHERE telegram_id = ? ORDER BY date DESC LIMIT 1",
+            (telegram_id,),
+        )
+        return await cursor.fetchone()
+
+
+async def record_puzzle_solved(telegram_id: int, freeze_eligible: bool) -> tuple[aiosqlite.Row, bool]:
+    """Records one solved puzzle for `telegram_id` today and updates the
+    streak. Returns (the resulting today's row, whether a streak freeze was
+    applied this call).
+
+    Streak rules: solving again the same day just bumps solved_count.
+    Solving on the very next calendar day bumps streak_days by one. Missing
+    exactly one day resets streak_days to 1 — unless `freeze_eligible` is
+    True (caller has already checked the Diamond tier) and a freeze hasn't
+    been used within STREAK_FREEZE_COOLDOWN_DAYS, in which case the gap is
+    bridged as if it hadn't happened. Missing two or more days always
+    resets, regardless of tier — the freeze only covers a single missed day.
+    """
+    today = today_str()
+
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        cursor = await db.execute(
+            "SELECT * FROM puzzle_stats WHERE telegram_id = ? AND date = ?",
+            (telegram_id, today),
+        )
+        existing_today = await cursor.fetchone()
+
+        if existing_today is not None:
+            await db.execute(
+                """
+                UPDATE puzzle_stats SET solved_count = solved_count + 1
+                WHERE telegram_id = ? AND date = ?
+                """,
+                (telegram_id, today),
+            )
+            await db.commit()
+            cursor = await db.execute(
+                "SELECT * FROM puzzle_stats WHERE telegram_id = ? AND date = ?",
+                (telegram_id, today),
+            )
+            return await cursor.fetchone(), False
+
+        cursor = await db.execute(
+            "SELECT * FROM puzzle_stats WHERE telegram_id = ? ORDER BY date DESC LIMIT 1",
+            (telegram_id,),
+        )
+        previous = await cursor.fetchone()
+
+        freeze_applied = False
+        if previous is None:
+            new_streak = 1
+            new_freeze_used_at = None
+        else:
+            gap_days = (
+                datetime.fromisoformat(today).date()
+                - datetime.fromisoformat(previous["date"]).date()
+            ).days
+            if gap_days == 1:
+                new_streak = previous["streak_days"] + 1
+                new_freeze_used_at = previous["streak_freeze_used_at"]
+            elif (
+                gap_days == 2
+                and freeze_eligible
+                and is_streak_freeze_available(previous["streak_freeze_used_at"])
+            ):
+                new_streak = previous["streak_days"] + 1
+                new_freeze_used_at = today
+                freeze_applied = True
+            else:
+                new_streak = 1
+                new_freeze_used_at = previous["streak_freeze_used_at"]
+
+        await db.execute(
+            """
+            INSERT INTO puzzle_stats (telegram_id, date, solved_count, streak_days, streak_freeze_used_at)
+            VALUES (?, ?, 1, ?, ?)
+            """,
+            (telegram_id, today, new_streak, new_freeze_used_at),
+        )
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT * FROM puzzle_stats WHERE telegram_id = ? AND date = ?",
+            (telegram_id, today),
+        )
+        return await cursor.fetchone(), freeze_applied
