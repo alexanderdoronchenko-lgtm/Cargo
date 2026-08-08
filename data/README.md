@@ -57,10 +57,14 @@ puzzle_ids are left untouched, so this only adds the newly-added rows).
 # openings.json
 
 Repertoire tree for the Opening Trainer tab (Emerald/Diamond only — see
-`api/main.py`'s `/api/openings`). The file below is a small worked example
-that establishes the format; replace it with a real repertoire whenever
-one's ready — no code changes needed, `api/main.py` just reads whatever's
-in this file at startup.
+`api/main.py`'s `/api/openings`). Currently holds 7 standard openings
+(Ruy Lopez, Scotch, Sicilian, French, Caro-Kann, Queen's Gambit, King's
+Indian — two branches each, generic textbook theory) as a placeholder —
+every line was checked move-by-move against python-chess before being
+committed, but the `"Стандартная теория."` comments are intentionally
+generic, standing in for a real personal repertoire with real comments
+later. No code changes needed to swap it — `api/main.py` just reads
+whatever's in this file at request time.
 
 Shape:
 
