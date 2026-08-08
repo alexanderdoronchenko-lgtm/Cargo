@@ -55,6 +55,19 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     pending_tier TEXT,
     FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
 );
+
+CREATE TABLE IF NOT EXISTS puzzles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    puzzle_id TEXT UNIQUE NOT NULL,
+    fen TEXT NOT NULL,
+    solution TEXT NOT NULL,
+    rating INTEGER NOT NULL,
+    rating_deviation INTEGER,
+    popularity INTEGER,
+    themes TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_puzzles_rating ON puzzles (rating);
 """
 
 
@@ -360,3 +373,58 @@ async def get_user_analyses(telegram_id: int, limit: int = 10) -> list[aiosqlite
             (telegram_id, limit),
         )
         return await cursor.fetchall()
+
+
+async def bulk_insert_puzzles(rows: list[tuple]) -> int:
+    """Inserts puzzle rows as (puzzle_id, fen, solution, rating,
+    rating_deviation, popularity, themes) tuples. Existing puzzle_ids are
+    left untouched, so re-running an import is safe. Returns how many rows
+    were actually new.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.executemany(
+            """
+            INSERT OR IGNORE INTO puzzles
+                (puzzle_id, fen, solution, rating, rating_deviation, popularity, themes)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def count_puzzles() -> int:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM puzzles")
+        row = await cursor.fetchone()
+        return row[0]
+
+
+# Widen the rating window this many times before giving up, doubling the
+# window on each attempt — keeps a request for a rare rating band (the
+# extreme ends of the dataset) from ever 404ing in practice.
+_PUZZLE_SEARCH_MAX_ATTEMPTS = 5
+
+
+async def get_random_puzzle(rating_min: int, rating_max: int) -> aiosqlite.Row | None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        lo, hi = rating_min, rating_max
+        for _ in range(_PUZZLE_SEARCH_MAX_ATTEMPTS):
+            cursor = await db.execute(
+                """
+                SELECT puzzle_id, fen, solution, rating, rating_deviation, popularity, themes
+                FROM puzzles
+                WHERE rating BETWEEN ? AND ?
+                ORDER BY RANDOM()
+                LIMIT 1
+                """,
+                (lo, hi),
+            )
+            row = await cursor.fetchone()
+            if row is not None:
+                return row
+            width = hi - lo
+            lo, hi = lo - width, hi + width
+        return None

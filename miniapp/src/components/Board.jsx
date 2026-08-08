@@ -17,7 +17,7 @@ const LIGHT_SQUARE = '#8C7460';
  * up to the caller to decide what happens next (advance `fen`, reject a
  * wrong puzzle move, etc.).
  */
-export default function Board({ fen, onMove, orientation = 'white' }) {
+export default function Board({ fen, onMove, orientation = 'white', customSquareStyles }) {
   const containerRef = useRef(null);
   const [boardWidth, setBoardWidth] = useState(320);
 
@@ -68,6 +68,7 @@ export default function Board({ fen, onMove, orientation = 'white' }) {
         customDropSquareStyle={{
           boxShadow: 'inset 0 0 1px 4px var(--color-accent-terracotta)',
         }}
+        customSquareStyles={customSquareStyles}
       />
     </div>
   );
