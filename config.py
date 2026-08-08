@@ -19,6 +19,12 @@ RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "750"))
 EMERALD_PRICE_STARS = int(os.getenv("EMERALD_PRICE_STARS", "1150"))
 DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "1800"))
 
+# Telegram Mini App URL — must be HTTPS (Telegram rejects http://). This is
+# a placeholder until the Mini App is actually deployed; update the env var
+# with the real URL, then register that same URL in BotFather via /newapp
+# (see DEPLOYMENT.md for the exact steps).
+MINIAPP_URL = os.getenv("MINIAPP_URL", "https://example.com/critical-moment-miniapp")
+
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Add it to your .env file.")
 

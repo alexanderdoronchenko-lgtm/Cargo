@@ -5,6 +5,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.types import MenuButtonWebApp, WebAppInfo
 
 import config
 import database
@@ -38,6 +39,14 @@ async def main() -> None:
     dp.include_router(main_router)
 
     asyncio.create_task(_subscription_expiry_loop())
+
+    # Persistent chat menu button (bottom-left, replaces the default "≡"
+    # attachment icon) — a second, always-visible way into the Mini App
+    # alongside /puzzles. Global for all chats; Telegram menu-button text
+    # isn't per-user-localized, hence the plain bilingual-friendly label.
+    await bot.set_chat_menu_button(
+        menu_button=MenuButtonWebApp(text="🧩 Puzzles", web_app=WebAppInfo(url=config.MINIAPP_URL))
+    )
 
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)

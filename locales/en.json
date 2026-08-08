@@ -1,6 +1,6 @@
 {
   "start_greeting": "Hi! I'm a chess game analysis bot.\n\nSend me a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org — I'll parse the moves.\n\nSee /help for the full list of commands.",
-  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n/balance — today's remaining game analyses\n/subscribe — subscribe or upgrade your plan\n/progress — recurring weaknesses over the last 30 days\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
+  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n/balance — today's remaining game analyses\n/subscribe — subscribe or upgrade your plan\n/progress — recurring weaknesses over the last 30 days\n/puzzles — open the mini app with puzzles and the opening trainer\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
   "language_prompt": "Choose your interface language:",
   "language_changed": "Language switched to English.",
   "game_received": "Game received, moves: {count}",
@@ -35,5 +35,7 @@
   "subscription_queued": "Payment received. The \"{tier}\" plan will take effect once your current active subscription ends.",
   "progress_no_data": "No critical mistakes found in the last 30 days — either you haven't reviewed a game yet, or you've been playing cleanly. Send a game to start building up stats.",
   "progress_analyzing": "Gathering your stats from the last 30 days...",
-  "progress_header": "Your recurring weaknesses over the last 30 days:"
+  "progress_header": "Your recurring weaknesses over the last 30 days:",
+  "puzzles_prompt": "Open the mini app — tactics puzzles and the opening trainer.",
+  "puzzles_button": "🧩 Open trainer"
 }
