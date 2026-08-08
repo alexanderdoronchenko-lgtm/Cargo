@@ -3,9 +3,20 @@ import { Chess } from 'chess.js';
 import Board from '../components/Board';
 import { fetchRandomPuzzle } from '../lib/api';
 import { getPuzzleRating, getSearchWindow, updatePuzzleRating } from '../lib/puzzleRating';
+import { getTelegramUser } from '../lib/telegram';
 
 const REPLY_DELAY_MS = 400;
 const REVEAL_STEP_MS = 600;
+
+// Mirrors services/puzzle_category_service.CATEGORY_LABELS_RU on the
+// backend — the API returns category keys, not display text, so the two
+// stay in sync deliberately rather than duplicating Russian strings there.
+const CATEGORY_LABELS = {
+  tactics: 'тактика',
+  endgame: 'эндшпиль',
+  opening: 'дебютные ошибки',
+  positional: 'позиционное понимание',
+};
 
 function applyUci(fen, uci) {
   const game = new Chess(fen);
@@ -22,6 +33,7 @@ export default function PuzzlesPage() {
   const [wrongSquares, setWrongSquares] = useState(null);
   const [solvedByUser, setSolvedByUser] = useState(true);
   const ratingScoredRef = useRef(false);
+  const userIdRef = useRef(getTelegramUser()?.id);
 
   const loadPuzzle = useCallback(async (rating) => {
     setStatus('loading');
@@ -29,7 +41,7 @@ export default function PuzzlesPage() {
     ratingScoredRef.current = false;
     try {
       const { ratingMin, ratingMax } = getSearchWindow(rating);
-      const next = await fetchRandomPuzzle(ratingMin, ratingMax);
+      const next = await fetchRandomPuzzle(ratingMin, ratingMax, userIdRef.current);
       setPuzzle(next);
       setFen(next.fen);
       setSolutionIndex(0);
@@ -175,6 +187,12 @@ export default function PuzzlesPage() {
             customSquareStyles={customSquareStyles}
           />
 
+          {puzzle?.targeted_category && (
+            <p className="text-center font-mono text-xs text-terracotta">
+              🎯 Задача по твоей слабой стороне: {CATEGORY_LABELS[puzzle.targeted_category] ?? puzzle.targeted_category}
+            </p>
+          )}
+
           {status === 'failed' && (
             <div className="space-y-2 text-center">
               <p className="font-mono text-sm text-red-400">Неверно</p>
@@ -205,6 +223,13 @@ export default function PuzzlesPage() {
                 Следующая задача
               </button>
             </div>
+          )}
+
+          {puzzle && !puzzle.targeted_available && (
+            <p className="rounded-sm border border-border bg-bg-elevated px-4 py-3 text-center text-xs text-ink-muted">
+              Прицельный подбор по твоим слабостям доступен на Изумруде и выше — команда{' '}
+              <code className="font-mono text-terracotta">/subscribe</code> в чате с ботом.
+            </p>
           )}
         </>
       )}

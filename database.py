@@ -1,4 +1,6 @@
 """SQLite access layer built on aiosqlite."""
+import random
+
 import aiosqlite
 
 import config
@@ -425,6 +427,39 @@ async def get_random_puzzle(rating_min: int, rating_max: int) -> aiosqlite.Row |
             row = await cursor.fetchone()
             if row is not None:
                 return row
+            width = hi - lo
+            lo, hi = lo - width, hi + width
+        return None
+
+
+async def get_random_puzzle_by_tags(
+    rating_min: int, rating_max: int, tags: set[str]
+) -> aiosqlite.Row | None:
+    """Like get_random_puzzle, but restricted to puzzles whose themes
+    intersect `tags`. Filtered in Python rather than with a chain of SQL
+    LIKEs — themes is a space-separated string and the whole table is only
+    a few thousand rows, so this stays fast without fragile boundary
+    matching.
+    """
+    if not tags:
+        return None
+
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        lo, hi = rating_min, rating_max
+        for _ in range(_PUZZLE_SEARCH_MAX_ATTEMPTS):
+            cursor = await db.execute(
+                """
+                SELECT puzzle_id, fen, solution, rating, rating_deviation, popularity, themes
+                FROM puzzles
+                WHERE rating BETWEEN ? AND ?
+                """,
+                (lo, hi),
+            )
+            rows = await cursor.fetchall()
+            matches = [row for row in rows if set(row["themes"].split()) & tags]
+            if matches:
+                return random.choice(matches)
             width = hi - lo
             lo, hi = lo - width, hi + width
         return None
