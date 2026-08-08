@@ -75,7 +75,7 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
             move_san=moment.move_san,
             cp_loss=moment.cp_loss,
         )
-        photo_bytes = render_position_png(moment.fen_after, moment.move_uci)
+        photo_bytes = render_position_png(moment.fen_after, moment.move_uci, moment.best_move_uci)
         await message.answer_photo(
             BufferedInputFile(photo_bytes, filename="position.png"),
             caption=truncate_html(markdown_to_html(caption), _MAX_CAPTION_LENGTH),

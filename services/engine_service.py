@@ -37,6 +37,7 @@ class CriticalMoment:
     score_after_cp: int
     cp_loss: int
     move_uci: str  # the played move, for rendering an arrow on the board
+    best_move_uci: str | None  # engine's preferred move, for a second arrow
     fen_after: str  # position right after the played move
     context_san: str  # a few plies of SAN notation around the played move
 
@@ -116,6 +117,7 @@ async def analyze_game(
 
             best_move = info.get("pv", [None])[0]
             best_move_san = board.san(best_move) if best_move else None
+            best_move_uci = best_move.uci() if best_move else None
             score_before = _score_cp(info["score"], mover)
 
             board.push(move)
@@ -135,6 +137,7 @@ async def analyze_game(
                         score_after_cp=score_after,
                         cp_loss=cp_loss,
                         move_uci=move.uci(),
+                        best_move_uci=best_move_uci,
                         fen_after=board.fen(),
                         context_san=_format_context_window(window),
                     )
