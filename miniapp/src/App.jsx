@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { initTelegram, getTelegramUser, isInsideTelegram } from './lib/telegram';
 import TabBar from './components/TabBar';
+import AudioPlayer from './components/AudioPlayer';
 import PuzzlesPage from './pages/PuzzlesPage';
 import OpeningTrainerPage from './pages/OpeningTrainerPage';
 import logoUrl from '../logo.svg';
@@ -42,6 +43,8 @@ export default function App() {
       <main className="flex-1 overflow-y-auto px-4 py-5">
         <ActivePage />
       </main>
+
+      <AudioPlayer />
 
       <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
     </div>

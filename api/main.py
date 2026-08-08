@@ -45,6 +45,16 @@ def _load_openings() -> dict:
     return _openings_cache
 
 
+# Background-music player: lists whatever's actually in miniapp/public/audio
+# at request time (not a hardcoded filename), so dropping a new track in
+# there is all it takes for the player to pick it up — no code change, no
+# restart. Playback itself is served by whatever's hosting the Mini App's
+# static files (Vite's public/ dir), not by this API — this endpoint only
+# answers "what's in the folder right now".
+_AUDIO_DIR = Path(__file__).resolve().parent.parent / "miniapp" / "public" / "audio"
+_AUDIO_EXTENSIONS = {".mp3", ".m4a", ".ogg", ".wav"}
+
+
 async def _get_tier(user_id: int) -> str:
     """Live check against subscriptions, same as everywhere else tier
     gates a feature — users.subscription_tier is a cache that can lag up
@@ -199,3 +209,13 @@ async def openings(user_id: int = Query(...)):
         raise HTTPException(403, "Opening trainer requires Emerald tier or higher")
 
     return _load_openings()
+
+
+@app.get("/api/audio/tracks")
+async def audio_tracks():
+    if not _AUDIO_DIR.is_dir():
+        return {"tracks": []}
+    tracks = sorted(
+        p.name for p in _AUDIO_DIR.iterdir() if p.is_file() and p.suffix.lower() in _AUDIO_EXTENSIONS
+    )
+    return {"tracks": tracks}

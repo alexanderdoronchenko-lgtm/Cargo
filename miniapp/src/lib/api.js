@@ -77,3 +77,21 @@ export async function fetchOpenings(userId) {
   }
   return response.json();
 }
+
+/**
+ * Filenames currently sitting in public/audio — whatever's there right
+ * now, not a fixed list. Playback URLs are built from these relative to
+ * the Mini App's own origin (`/audio/<name>`), not BASE_URL — the audio
+ * files themselves are static assets served alongside the app, unrelated
+ * to the API host.
+ * @returns {Promise<string[]>}
+ */
+export async function fetchAudioTracks() {
+  const url = new URL('/api/audio/tracks', BASE_URL);
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Audio tracks fetch failed: ${response.status}`);
+  }
+  const data = await response.json();
+  return data.tracks;
+}
