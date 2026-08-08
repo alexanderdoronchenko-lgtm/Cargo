@@ -17,6 +17,7 @@ STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 # Subscription prices in Telegram Stars (XTR), per month.
 RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "750"))
 EMERALD_PRICE_STARS = int(os.getenv("EMERALD_PRICE_STARS", "1150"))
+DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "1800"))
 
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Add it to your .env file.")

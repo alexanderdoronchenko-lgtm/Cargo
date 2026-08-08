@@ -1,4 +1,4 @@
-"""Daily usage limits for game analysis (free / Ruby / Emerald tiers)."""
+"""Daily usage limits for game analysis (free / Ruby / Emerald / Diamond tiers)."""
 import database
 
 ACTION_ANALYSIS = "game_analysis"
@@ -7,13 +7,15 @@ ACTION_CRITICAL_MOMENT = "critical_moment"
 TIER_FREE = "free"
 TIER_RUBY = "ruby"
 TIER_EMERALD = "emerald"
+TIER_DIAMOND = "diamond"
 
-# Ruby and Emerald are fair-use ceilings, not real unlimited, until real
-# subscription enforcement lands (see the /subscribe step).
+# Ruby, Emerald, and Diamond are fair-use ceilings, not real unlimited, until
+# real subscription enforcement lands (see the /subscribe step).
 DAILY_LIMITS = {
     TIER_FREE: 2,
     TIER_RUBY: 8,
     TIER_EMERALD: 12,
+    TIER_DIAMOND: 20,
 }
 
 

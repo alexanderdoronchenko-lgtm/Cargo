@@ -19,11 +19,13 @@ router = Router()
 _TIER_NAME_KEYS = {
     "ruby": "tier_ruby",
     "emerald": "tier_emerald",
+    "diamond": "tier_diamond",
 }
 
 _TIER_PRICES = {
     "ruby": config.RUBY_PRICE_STARS,
     "emerald": config.EMERALD_PRICE_STARS,
+    "diamond": config.DIAMOND_PRICE_STARS,
 }
 
 
@@ -48,6 +50,12 @@ def _tier_keyboard(lang: str) -> InlineKeyboardMarkup:
                 InlineKeyboardButton(
                     text=t("subscribe_button_emerald", lang, price=config.EMERALD_PRICE_STARS),
                     callback_data="subscribe:emerald",
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("subscribe_button_diamond", lang, price=config.DIAMOND_PRICE_STARS),
+                    callback_data="subscribe:diamond",
                 )
             ],
         ]
@@ -76,7 +84,7 @@ async def cmd_subscribe(message: Message) -> None:
     await message.answer(prompt, reply_markup=_tier_keyboard(lang))
 
 
-@router.callback_query(F.data.in_({"subscribe:ruby", "subscribe:emerald"}))
+@router.callback_query(F.data.in_({"subscribe:ruby", "subscribe:emerald", "subscribe:diamond"}))
 async def cb_subscribe(callback: CallbackQuery) -> None:
     tier = callback.data.split(":", 1)[1]
     telegram_id = callback.from_user.id
@@ -94,21 +102,18 @@ async def cb_subscribe(callback: CallbackQuery) -> None:
         active_tier, expires_at = active
 
         if subscription_service.TIER_ORDER[tier] < subscription_service.TIER_ORDER[active_tier]:
-            # Buying a lower tier than what's active would replace it and
-            # reset the 30-day period — a straight downgrade nobody should
-            # pay for. Block it instead of silently sending an invoice.
-            await callback.answer(
-                t(
-                    "subscribe_downgrade_blocked",
-                    lang,
-                    current_tier=_tier_name(active_tier, lang),
-                    expires_at=_format_date(expires_at),
-                ),
-                show_alert=True,
+            # Buying a lower tier than what's active doesn't replace it —
+            # the current tier stays active until it expires, and the new
+            # (lower) tier takes over only then. Still send the invoice, but
+            # with wording that explains the deferred activation.
+            description = t(
+                "invoice_description_downgrade",
+                lang,
+                tier=tier_name,
+                current_tier=_tier_name(active_tier, lang),
+                expires_at=_format_date(expires_at),
             )
-            return
-
-        if tier == active_tier:
+        elif tier == active_tier:
             description = t(
                 "invoice_description_renew",
                 lang,
@@ -153,17 +158,20 @@ async def process_successful_payment(message: Message) -> None:
     payment = message.successful_payment
     tier = payment.invoice_payload.split(":", 1)[1]
 
-    await subscription_service.activate_subscription(message.from_user.id, tier)
+    applied = await subscription_service.activate_subscription(message.from_user.id, tier)
 
     lang = await database.get_or_create_user(
         message.from_user.id, message.from_user.username, message.from_user.language_code
     )
     tier_name = _tier_name(tier, lang)
-    await message.answer(
-        t(
-            "subscription_activated",
-            lang,
-            tier=tier_name,
-            days=subscription_service.SUBSCRIPTION_DURATION_DAYS,
+    if applied:
+        await message.answer(
+            t(
+                "subscription_activated",
+                lang,
+                tier=tier_name,
+                days=subscription_service.SUBSCRIPTION_DURATION_DAYS,
+            )
         )
-    )
+    else:
+        await message.answer(t("subscription_queued", lang, tier=tier_name))

@@ -12,8 +12,7 @@ CREATE TABLE IF NOT EXISTS users (
     telegram_id INTEGER UNIQUE NOT NULL,
     username TEXT,
     language TEXT NOT NULL DEFAULT '{DEFAULT_LANG}',
-    subscription_tier TEXT NOT NULL DEFAULT '{_DEFAULT_TIER}'
-        CHECK (subscription_tier IN ('free', 'ruby', 'emerald')),
+    subscription_tier TEXT NOT NULL DEFAULT '{_DEFAULT_TIER}',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -51,11 +50,30 @@ CREATE TABLE IF NOT EXISTS token_usage (
 CREATE TABLE IF NOT EXISTS subscriptions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     telegram_id INTEGER UNIQUE NOT NULL,
-    tier TEXT NOT NULL CHECK (tier IN ('ruby', 'emerald')),
+    tier TEXT NOT NULL,
     expires_at TEXT NOT NULL,
+    pending_tier TEXT,
     FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
 );
 """
+
+
+async def _rebuild_table(db, table_name: str, create_sql: str, columns: list[str]) -> None:
+    """Rebuilds `table_name` using `create_sql`, preserving data for any of
+    `columns` present in the old table. Used where SQLite can't alter a
+    CHECK constraint in place.
+    """
+    old_name = f"{table_name}_old"
+    await db.execute(f"ALTER TABLE {table_name} RENAME TO {old_name}")
+    await db.execute(create_sql)
+    cursor = await db.execute(f"PRAGMA table_info({old_name})")
+    old_columns = {row[1] async for row in cursor}
+    copy_columns = [c for c in columns if c in old_columns]
+    column_list = ", ".join(copy_columns)
+    await db.execute(
+        f"INSERT INTO {table_name} ({column_list}) SELECT {column_list} FROM {old_name}"
+    )
+    await db.execute(f"DROP TABLE {old_name}")
 
 
 async def init_db() -> None:
@@ -84,6 +102,48 @@ async def init_db() -> None:
         ):
             if column not in usage_columns:
                 await db.execute(f"ALTER TABLE usage ADD COLUMN {column} {column_type}")
+
+        # Upgrade tables created before the Diamond tier: SQLite can't widen
+        # a CHECK constraint in place, so users.subscription_tier and
+        # subscriptions.tier (both previously CHECK'd to a fixed tier list)
+        # get rebuilt without the constraint — tier validity now lives in
+        # application code (see usage_service/subscription_service), so
+        # adding a future tier never needs another destructive migration.
+        # subscriptions.pending_tier (added for deferred downgrades) is the
+        # signal that this migration already ran.
+        cursor = await db.execute("PRAGMA table_info(subscriptions)")
+        subs_columns = {row[1] async for row in cursor}
+        if "pending_tier" not in subs_columns:
+            await _rebuild_table(
+                db,
+                "users",
+                f"""
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER UNIQUE NOT NULL,
+                    username TEXT,
+                    language TEXT NOT NULL DEFAULT '{DEFAULT_LANG}',
+                    subscription_tier TEXT NOT NULL DEFAULT '{_DEFAULT_TIER}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )
+                """,
+                ["id", "telegram_id", "username", "language", "subscription_tier", "created_at"],
+            )
+            await _rebuild_table(
+                db,
+                "subscriptions",
+                """
+                CREATE TABLE subscriptions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    telegram_id INTEGER UNIQUE NOT NULL,
+                    tier TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    pending_tier TEXT,
+                    FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+                )
+                """,
+                ["id", "telegram_id", "tier", "expires_at", "pending_tier"],
+            )
 
         await db.commit()
 
@@ -159,39 +219,58 @@ async def get_active_subscription(telegram_id: int) -> aiosqlite.Row | None:
 
 
 async def upsert_subscription(telegram_id: int, tier: str, expires_at: str) -> None:
-    """Activates or upgrades a subscription — one active period per user,
-    never two in parallel.
+    """Activates, renews, or upgrades a subscription — one active period per
+    user, never two in parallel. Also cancels any previously queued
+    downgrade, since the tier is changing effective immediately.
     """
     async with aiosqlite.connect(config.DB_PATH) as db:
         await db.execute(
             """
-            INSERT INTO subscriptions (telegram_id, tier, expires_at) VALUES (?, ?, ?)
+            INSERT INTO subscriptions (telegram_id, tier, expires_at, pending_tier)
+            VALUES (?, ?, ?, NULL)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 tier = excluded.tier,
-                expires_at = excluded.expires_at
+                expires_at = excluded.expires_at,
+                pending_tier = NULL
             """,
             (telegram_id, tier, expires_at),
         )
         await db.commit()
 
 
-async def expire_subscriptions() -> int:
-    """Downgrades every user whose subscription has lapsed back to the free
-    tier. Returns how many users were downgraded.
+async def queue_downgrade(telegram_id: int, pending_tier: str) -> None:
+    """Records a lower-tier purchase to take effect once the current
+    (higher) subscription period ends, without touching the active tier or
+    expiry now.
     """
     async with aiosqlite.connect(config.DB_PATH) as db:
-        cursor = await db.execute(
-            f"""
-            UPDATE users
-            SET subscription_tier = '{_DEFAULT_TIER}'
-            WHERE subscription_tier != '{_DEFAULT_TIER}'
-              AND telegram_id IN (
-                  SELECT telegram_id FROM subscriptions WHERE expires_at <= datetime('now')
-              )
-            """
+        await db.execute(
+            "UPDATE subscriptions SET pending_tier = ? WHERE telegram_id = ?",
+            (pending_tier, telegram_id),
         )
         await db.commit()
-        return cursor.rowcount
+
+
+async def get_lapsed_subscriptions() -> list[aiosqlite.Row]:
+    """Subscriptions whose expires_at has passed — the daily expiry job's
+    input. Each row carries any queued pending_tier so the caller can apply
+    it instead of just downgrading to free.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT telegram_id, pending_tier FROM subscriptions WHERE expires_at <= datetime('now')"
+        )
+        return await cursor.fetchall()
+
+
+async def downgrade_to_free(telegram_id: int) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            f"UPDATE users SET subscription_tier = '{_DEFAULT_TIER}' WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        await db.commit()
 
 
 async def log_usage(

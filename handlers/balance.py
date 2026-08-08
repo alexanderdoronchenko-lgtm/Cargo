@@ -12,6 +12,7 @@ _TIER_NAME_KEYS = {
     usage_service.TIER_FREE: "tier_free",
     usage_service.TIER_RUBY: "tier_ruby",
     usage_service.TIER_EMERALD: "tier_emerald",
+    usage_service.TIER_DIAMOND: "tier_diamond",
 }
 
 

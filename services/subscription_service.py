@@ -9,10 +9,11 @@ SUBSCRIPTION_DURATION_DAYS = 30
 TIER_PRICES_STARS = {
     "ruby": config.RUBY_PRICE_STARS,
     "emerald": config.EMERALD_PRICE_STARS,
+    "diamond": config.DIAMOND_PRICE_STARS,
 }
 
 # Ordering for comparing a purchase against an existing subscription.
-TIER_ORDER = {"free": 0, "ruby": 1, "emerald": 2}
+TIER_ORDER = {"free": 0, "ruby": 1, "emerald": 2, "diamond": 3}
 
 
 def _new_expiry() -> str:
@@ -31,17 +32,38 @@ async def get_active_subscription(telegram_id: int) -> tuple[str, str] | None:
     return row["tier"], row["expires_at"]
 
 
-async def activate_subscription(telegram_id: int, tier: str) -> None:
-    """Activates a new subscription or upgrades an existing one. Always
-    replaces the tier and resets expires_at to 30 days from now — never two
-    parallel periods, even when upgrading mid-period.
+async def activate_subscription(telegram_id: int, tier: str) -> bool:
+    """Activates a new subscription, renews/upgrades an existing one, or —
+    when `tier` is lower than an active subscription — queues it as a
+    pending downgrade that only takes effect once the current period ends.
+
+    Returns True if the tier was applied immediately, False if it was
+    queued instead.
     """
+    active = await get_active_subscription(telegram_id)
+    if active is not None:
+        active_tier, _ = active
+        if TIER_ORDER[tier] < TIER_ORDER[active_tier]:
+            await database.queue_downgrade(telegram_id, tier)
+            return False
+
     await database.upsert_subscription(telegram_id, tier, _new_expiry())
     await database.set_user_tier(telegram_id, tier)
+    return True
 
 
 async def expire_subscriptions() -> int:
-    """Downgrades every user whose subscription has lapsed back to free.
-    Returns how many users were downgraded.
+    """Processes every subscription whose period has lapsed: applies a
+    queued pending_tier with a fresh period if one was set, otherwise
+    downgrades the user back to free. Returns how many users were affected.
     """
-    return await database.expire_subscriptions()
+    rows = await database.get_lapsed_subscriptions()
+    for row in rows:
+        telegram_id = row["telegram_id"]
+        pending_tier = row["pending_tier"]
+        if pending_tier is not None:
+            await database.upsert_subscription(telegram_id, pending_tier, _new_expiry())
+            await database.set_user_tier(telegram_id, pending_tier)
+        else:
+            await database.downgrade_to_free(telegram_id)
+    return len(rows)
