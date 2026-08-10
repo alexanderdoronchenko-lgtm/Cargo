@@ -2,6 +2,7 @@ from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message
 
+import config
 import database
 from locales import t
 from services import usage_service
@@ -22,6 +23,10 @@ async def cmd_balance(message: Message) -> None:
     lang = await database.get_or_create_user(
         telegram_id, message.from_user.username, message.from_user.language_code
     )
+    if telegram_id == config.ADMIN_USER_ID:
+        await message.answer(t("balance_admin", lang))
+        return
+
     tier = await database.get_user_tier(telegram_id)
     remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
     limit = usage_service.daily_limit(tier)

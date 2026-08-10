@@ -25,6 +25,13 @@ DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "1500"))
 # (see DEPLOYMENT.md for the exact steps).
 MINIAPP_URL = os.getenv("MINIAPP_URL", "https://example.com/critical-moment-miniapp")
 
+# Telegram user_id that gets unlimited access everywhere (game analyses,
+# puzzles, opening trainer, streak freeze) regardless of actual
+# subscription — for testing. Unset by default, so nobody gets this unless
+# it's explicitly configured.
+_admin_user_id_raw = os.getenv("ADMIN_USER_ID")
+ADMIN_USER_ID = int(_admin_user_id_raw) if _admin_user_id_raw else None
+
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN is not set. Add it to your .env file.")
 

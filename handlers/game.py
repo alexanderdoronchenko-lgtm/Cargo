@@ -2,6 +2,7 @@ import chess.pgn
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, Message
 
+import config
 import database
 from locales import t
 from services.board_image_service import render_position_png
@@ -31,11 +32,12 @@ async def _get_lang(message: Message) -> str:
 
 async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> None:
     telegram_id = message.from_user.id
-    tier = await database.get_user_tier(telegram_id)
-    remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
-    if remaining <= 0:
-        await message.answer(t("limit_exceeded", lang, limit=usage_service.daily_limit(tier)))
-        return
+    if telegram_id != config.ADMIN_USER_ID:
+        tier = await database.get_user_tier(telegram_id)
+        remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
+        if remaining <= 0:
+            await message.answer(t("limit_exceeded", lang, limit=usage_service.daily_limit(tier)))
+            return
 
     await message.answer(t("game_received", lang, count=count_moves(game)))
     await message.answer(t("analyzing", lang))

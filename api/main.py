@@ -15,6 +15,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import config
 import database
 from services import puzzle_category_service
 from services.usage_service import ACTION_CRITICAL_MOMENT
@@ -59,7 +60,15 @@ async def _get_tier(user_id: int) -> str:
     """Live check against subscriptions, same as everywhere else tier
     gates a feature — users.subscription_tier is a cache that can lag up
     to 24h behind an actual expiry.
+
+    The configured admin is treated as Diamond regardless of any real
+    subscription. Diamond already unlocks every tier-gated feature this
+    function feeds (targeted puzzle selection, the streak freeze, the
+    opening trainer), so this one mapping covers all of them at once
+    rather than needing a separate bypass at each call site.
     """
+    if config.ADMIN_USER_ID is not None and user_id == config.ADMIN_USER_ID:
+        return "diamond"
     active = await database.get_active_subscription(user_id)
     return active["tier"] if active is not None else "free"
 

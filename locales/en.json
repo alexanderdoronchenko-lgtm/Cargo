@@ -37,5 +37,6 @@
   "progress_analyzing": "Gathering your stats from the last 30 days...",
   "progress_header": "Your recurring weaknesses over the last 30 days:",
   "puzzles_prompt": "Open the mini app — tactics puzzles and the opening trainer.",
-  "puzzles_button": "🧩 Open trainer"
+  "puzzles_button": "🧩 Open trainer",
+  "balance_admin": "Admin access: unlimited."
 }
