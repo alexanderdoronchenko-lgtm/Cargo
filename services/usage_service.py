@@ -13,9 +13,9 @@ TIER_DIAMOND = "diamond"
 # real subscription enforcement lands (see the /subscribe step).
 DAILY_LIMITS = {
     TIER_FREE: 2,
-    TIER_RUBY: 8,
-    TIER_EMERALD: 12,
-    TIER_DIAMOND: 20,
+    TIER_RUBY: 10,
+    TIER_EMERALD: 15,
+    TIER_DIAMOND: 30,
 }
 
 

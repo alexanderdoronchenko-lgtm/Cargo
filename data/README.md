@@ -5,7 +5,7 @@
 trainer keeps serving *different* puzzles at a given rating for months of
 regular use, not just a few weeks before repeats start showing up (the
 original 8,803-puzzle cut was too thin for that, especially at the
-Diamond tier's 20/day limit).
+Diamond tier's 30/day limit).
 
 Sampling: capped at 5,000 puzzles per 200-point rating band, taking
 *everything* available in bands that had fewer than that. Only the five
