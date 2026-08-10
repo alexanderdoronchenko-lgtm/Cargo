@@ -15,9 +15,9 @@ DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 
 # Subscription prices in Telegram Stars (XTR), per month.
-RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "750"))
-EMERALD_PRICE_STARS = int(os.getenv("EMERALD_PRICE_STARS", "1150"))
-DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "1800"))
+RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "600"))
+EMERALD_PRICE_STARS = int(os.getenv("EMERALD_PRICE_STARS", "900"))
+DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "1500"))
 
 # Telegram Mini App URL — must be HTTPS (Telegram rejects http://). This is
 # a placeholder until the Mini App is actually deployed; update the env var
