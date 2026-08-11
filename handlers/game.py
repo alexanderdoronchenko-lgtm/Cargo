@@ -1,3 +1,5 @@
+import html
+
 import chess.pgn
 from aiogram import F, Router
 from aiogram.types import BufferedInputFile, Message
@@ -14,7 +16,7 @@ from services.chess_service import (
     fetch_game_by_url,
     parse_pgn,
 )
-from services.commentary_service import generate_moment_explanations
+from services.commentary_service import generate_game_summary, generate_moment_explanations
 from services.engine_service import EngineError, TYPE_MISTAKE, analyze_game, select_top_moments
 from services import usage_service
 from telegram_format import markdown_to_html, truncate_html
@@ -43,13 +45,14 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
     await message.answer(t("analyzing", lang))
 
     try:
-        critical_moments = await analyze_game(game)
+        analysis = await analyze_game(game)
     except EngineError:
         await message.answer(t("engine_error", lang))
         return
 
     await usage_service.record_analysis(telegram_id)
 
+    critical_moments = analysis.moments
     if not critical_moments:
         await message.answer(t("no_critical_moments", lang))
         return
@@ -67,14 +70,14 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
             telegram_id, moment.move_number, moment.move_san, moment.context_san, moment.cp_loss
         )
 
-    critical_moments = select_top_moments(critical_moments)
+    moments_for_captions = select_top_moments(critical_moments)
 
-    explanations, token_usage = await generate_moment_explanations(critical_moments, lang)
+    explanations, token_usage = await generate_moment_explanations(moments_for_captions, lang)
     await database.log_token_usage(
         telegram_id, token_usage.input_tokens, token_usage.output_tokens, token_usage.cached_tokens
     )
 
-    for moment, explanation in zip(critical_moments, explanations):
+    for moment, explanation in zip(moments_for_captions, explanations):
         if explanation.strip():
             caption = explanation.strip()
         elif moment.type == TYPE_MISTAKE:
@@ -97,6 +100,19 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
             BufferedInputFile(photo_bytes, filename="position.png"),
             caption=truncate_html(markdown_to_html(caption), _MAX_CAPTION_LENGTH),
         )
+
+    # Grounded in every flagged moment across the whole game, not just the
+    # subset that fit in moments_for_captions, so the summary's per-phase
+    # lines reflect the full game the accuracy number was computed from.
+    summary, summary_usage = await generate_game_summary(critical_moments, analysis.accuracy_pct, lang)
+    await database.log_token_usage(
+        telegram_id, summary_usage.input_tokens, summary_usage.output_tokens, summary_usage.cached_tokens
+    )
+    # No formatting is requested from Claude here (plain text), but the
+    # message still goes out under parse_mode=HTML — escape defensively so
+    # an incidental "<", ">" or "&" in the model's prose can't be misparsed
+    # as markup and reject the send.
+    await message.answer(html.escape(summary))
 
 
 @router.message(F.document)

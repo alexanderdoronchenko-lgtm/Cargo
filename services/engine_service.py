@@ -1,6 +1,7 @@
 """Finds notable moments in a game using Stockfish — mistakes (blunders) and
-strong moves worth praising.
+strong moves worth praising — and scores the game's overall accuracy.
 """
+import math
 from dataclasses import dataclass
 
 import chess
@@ -44,6 +45,13 @@ MAX_CRITICAL_MOMENTS = 12
 
 _MATE_SCORE = 100_000
 
+# Cap on how much a single move counts toward the game's average centipawn
+# loss (ACPL) — without it, one blunder into a mating line (loss in the
+# tens of thousands of "cp") would swamp the average and floor the whole
+# game's accuracy regardless of every other move, which isn't a useful
+# signal. 1000 is a commonly used cap in open ACPL implementations.
+_ACCURACY_LOSS_CAP_CP = 1000
+
 
 class EngineError(Exception):
     """Raised when Stockfish can't be started or queried."""
@@ -67,6 +75,27 @@ class CriticalMoment:
     # (cp_loss for mistakes, the engine-gap or favorable swing for
     # strengths) — used by select_top_moments to rank/cap them together.
     magnitude: int = 0
+
+
+@dataclass
+class GameAnalysis:
+    moments: list[CriticalMoment]
+    # Whole-game accuracy percentage (0-100), derived from average
+    # centipawn loss across every ply — see _accuracy_percent.
+    accuracy_pct: float
+
+
+def _accuracy_percent(average_cp_loss: float) -> float:
+    """Maps average centipawn loss (ACPL) to an accuracy percentage with an
+    exponential decay curve, in the spirit of chess.com/Lichess-style
+    accuracy scores (the task explicitly allows "any reasonable open
+    formula" rather than reimplementing an official one). Calibrated so
+    ACPL 0 -> 100%, ACPL ~10 -> ~96% (strong play), ACPL ~50 -> ~80%
+    (solid club play), ACPL ~100 -> ~64% (error-prone), clamped to
+    [0, 100].
+    """
+    accuracy = 103.1668 * math.exp(-0.004354 * average_cp_loss) - 3.1669
+    return max(0.0, min(100.0, accuracy))
 
 
 def _score_cp(score: chess.engine.PovScore, color: chess.Color) -> int:
@@ -121,7 +150,7 @@ async def analyze_game(
     cp_loss_threshold: int = DEFAULT_CP_LOSS_THRESHOLD,
     strength_gap_threshold: int = DEFAULT_STRENGTH_GAP_THRESHOLD,
     strength_gain_threshold: int = DEFAULT_STRENGTH_GAIN_THRESHOLD,
-) -> list[CriticalMoment]:
+) -> GameAnalysis:
     if not config.STOCKFISH_PATH:
         raise EngineError("STOCKFISH_PATH is not configured. Add it to your .env file.")
 
@@ -134,6 +163,8 @@ async def analyze_game(
 
     limit = chess.engine.Limit(depth=depth, time=time_limit)
     critical_moments: list[CriticalMoment] = []
+    total_capped_loss = 0
+    ply_count = 0
 
     try:
         board = game.board()
@@ -162,6 +193,8 @@ async def analyze_game(
             score_after = _score_cp(lines[0]["score"], mover)
 
             cp_loss = score_before - score_after
+            total_capped_loss += max(0, min(cp_loss, _ACCURACY_LOSS_CAP_CP))
+            ply_count += 1
 
             moment_type = None
             magnitude = 0
@@ -201,4 +234,5 @@ async def analyze_game(
     finally:
         await engine.quit()
 
-    return critical_moments
+    acpl = total_capped_loss / ply_count if ply_count else 0.0
+    return GameAnalysis(moments=critical_moments, accuracy_pct=_accuracy_percent(acpl))

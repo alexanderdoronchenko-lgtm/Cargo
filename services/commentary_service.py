@@ -201,3 +201,46 @@ async def generate_moment_explanations(
         cached_tokens=response.usage.cache_read_input_tokens,
     )
     return explanations, usage
+
+
+_SUMMARY_MAX_TOKENS = 500
+
+
+async def generate_game_summary(
+    critical_moments: list[CriticalMoment], accuracy_pct: float, language: str
+) -> tuple[str, TokenUsage]:
+    """Returns the short end-of-game summary described by the corpus — an
+    evaluative phrase with the accuracy percentage, plus one line each on
+    the opening, tactics/strategy, and the endgame — as a single
+    Telegram-ready plain-text message.
+    """
+    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+
+    user_prompt = (
+        f"Точность партии по движку: {accuracy_pct:.1f}%.\n\n"
+        "Отмеченные моменты партии для контекста (они уже прокомментированы "
+        f"отдельно, не нужно пересказывать каждый):\n\n{_format_moments(critical_moments)}\n\n"
+        "Напиши короткую итоговую сводку партии — как в конце разборов в "
+        "примерах выше: сначала оценочная фраза вместе с процентом точности "
+        f"({accuracy_pct:.1f}%), затем по одной короткой строке на дебют, на "
+        "тактику/стратегию и на эндшпиль, опираясь на то, что реально было в "
+        "партии (моменты выше и то, в какой стадии партии они случились). "
+        "Обычный текст, без разметки и без списков, в своей обычной манере. "
+        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру, что в "
+        "примерах выше, даже если примеры на другом языке."
+    )
+
+    response = await client.messages.create(
+        model=config.CLAUDE_MODEL,
+        max_tokens=_SUMMARY_MAX_TOKENS,
+        system=build_system_prompt(),
+        messages=[{"role": "user", "content": user_prompt}],
+    )
+
+    summary = "".join(block.text for block in response.content if block.type == "text").strip()
+    usage = TokenUsage(
+        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_tokens=response.usage.cache_read_input_tokens,
+    )
+    return summary, usage
