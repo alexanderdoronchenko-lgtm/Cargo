@@ -15,6 +15,7 @@
   "engine_error": "Couldn't analyze the game with the engine. Please try again later.",
   "no_critical_moments": "No critical mistakes (loss over 100 centipawns) found — the game was played evenly.",
   "moment_fallback_caption": "Move {move_number}: `{move_san}` (loss {cp_loss} cp).",
+  "moment_fallback_caption_strength": "Move {move_number}: `{move_san}` — a strong move.",
   "limit_exceeded": "You've reached today's game analysis limit ({limit} per day). Subscribe or upgrade your plan — /subscribe.",
   "balance_status": "Game analyses left today: {remaining} of {limit}.\nCurrent plan: {tier}.",
   "tier_free": "Free",

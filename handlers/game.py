@@ -15,7 +15,7 @@ from services.chess_service import (
     parse_pgn,
 )
 from services.commentary_service import generate_moment_explanations
-from services.engine_service import EngineError, analyze_game, select_top_moments
+from services.engine_service import EngineError, TYPE_MISTAKE, analyze_game, select_top_moments
 from services import usage_service
 from telegram_format import markdown_to_html, truncate_html
 
@@ -54,10 +54,15 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
         await message.answer(t("no_critical_moments", lang))
         return
 
-    # Logged for /progress (all moments, not just the ones sent to Claude
-    # below) so a month's worth of weaknesses can be tracked even for games
-    # with more blunders than fit in one review.
+    # Logged for /progress and targeted puzzle selection (all mistakes, not
+    # just the ones sent to Claude below) so a month's worth of weaknesses
+    # can be tracked even for games with more blunders than fit in one
+    # review. Strength moments are deliberately excluded here — that
+    # tracking is weakness-only, and a good move logged alongside real
+    # mistakes would skew both features toward a false "weakness".
     for moment in critical_moments:
+        if moment.type != TYPE_MISTAKE:
+            continue
         await usage_service.record_critical_moment(
             telegram_id, moment.move_number, moment.move_san, moment.context_san, moment.cp_loss
         )
@@ -70,13 +75,23 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
     )
 
     for moment, explanation in zip(critical_moments, explanations):
-        caption = explanation.strip() or t(
-            "moment_fallback_caption",
-            lang,
-            move_number=moment.move_number,
-            move_san=moment.move_san,
-            cp_loss=moment.cp_loss,
-        )
+        if explanation.strip():
+            caption = explanation.strip()
+        elif moment.type == TYPE_MISTAKE:
+            caption = t(
+                "moment_fallback_caption",
+                lang,
+                move_number=moment.move_number,
+                move_san=moment.move_san,
+                cp_loss=moment.cp_loss,
+            )
+        else:
+            caption = t(
+                "moment_fallback_caption_strength",
+                lang,
+                move_number=moment.move_number,
+                move_san=moment.move_san,
+            )
         photo_bytes = render_position_png(moment.fen_after, moment.move_uci, moment.best_move_uci)
         await message.answer_photo(
             BufferedInputFile(photo_bytes, filename="position.png"),

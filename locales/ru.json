@@ -15,6 +15,7 @@
   "engine_error": "Не удалось проанализировать партию движком. Попробуйте позже.",
   "no_critical_moments": "Критических ошибок (потеря более 100 сантипешек) в партии не найдено — партия сыграна ровно.",
   "moment_fallback_caption": "Ход {move_number}: `{move_san}` (потеря {cp_loss} сп).",
+  "moment_fallback_caption_strength": "Ход {move_number}: `{move_san}` — сильный ход.",
   "limit_exceeded": "Лимит разборов партий на сегодня исчерпан ({limit} в день). Оформи или повысь подписку — /subscribe.",
   "balance_status": "Сегодня доступно разборов партии: {remaining} из {limit}.\nТекущий тариф: {tier}.",
   "tier_free": "Бесплатный",
