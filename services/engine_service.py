@@ -150,7 +150,13 @@ async def analyze_game(
     cp_loss_threshold: int = DEFAULT_CP_LOSS_THRESHOLD,
     strength_gap_threshold: int = DEFAULT_STRENGTH_GAP_THRESHOLD,
     strength_gain_threshold: int = DEFAULT_STRENGTH_GAIN_THRESHOLD,
+    user_side: str | None = None,
 ) -> GameAnalysis:
+    """If `user_side` ("white"/"black") is given, the returned accuracy_pct
+    is computed from that side's plies only — it's presented to the user as
+    *their* accuracy, so it shouldn't be diluted by the opponent's moves.
+    Left as None, it falls back to whole-game accuracy across both sides.
+    """
     if not config.STOCKFISH_PATH:
         raise EngineError("STOCKFISH_PATH is not configured. Add it to your .env file.")
 
@@ -193,8 +199,10 @@ async def analyze_game(
             score_after = _score_cp(lines[0]["score"], mover)
 
             cp_loss = score_before - score_after
-            total_capped_loss += max(0, min(cp_loss, _ACCURACY_LOSS_CAP_CP))
-            ply_count += 1
+            mover_side = "white" if mover == chess.WHITE else "black"
+            if user_side is None or mover_side == user_side:
+                total_capped_loss += max(0, min(cp_loss, _ACCURACY_LOSS_CAP_CP))
+                ply_count += 1
 
             moment_type = None
             magnitude = 0

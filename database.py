@@ -16,6 +16,8 @@ CREATE TABLE IF NOT EXISTS users (
     username TEXT,
     language TEXT NOT NULL DEFAULT '{DEFAULT_LANG}',
     subscription_tier TEXT NOT NULL DEFAULT '{_DEFAULT_TIER}',
+    chesscom_username TEXT,
+    lichess_username TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -117,6 +119,13 @@ async def init_db() -> None:
                 f"DEFAULT '{_DEFAULT_TIER}'"
             )
 
+        # Upgrade a users table created before chess platform usernames were
+        # tracked (used to auto-detect which side the user played from PGN
+        # [White]/[Black] tags).
+        for column in ("chesscom_username", "lichess_username"):
+            if column not in columns:
+                await db.execute(f"ALTER TABLE users ADD COLUMN {column} TEXT")
+
         # Upgrade a usage table created before per-moment columns existed
         # (previously just telegram_id/timestamp/action_type).
         cursor = await db.execute("PRAGMA table_info(usage)")
@@ -151,10 +160,21 @@ async def init_db() -> None:
                     username TEXT,
                     language TEXT NOT NULL DEFAULT '{DEFAULT_LANG}',
                     subscription_tier TEXT NOT NULL DEFAULT '{_DEFAULT_TIER}',
+                    chesscom_username TEXT,
+                    lichess_username TEXT,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )
                 """,
-                ["id", "telegram_id", "username", "language", "subscription_tier", "created_at"],
+                [
+                    "id",
+                    "telegram_id",
+                    "username",
+                    "language",
+                    "subscription_tier",
+                    "chesscom_username",
+                    "lichess_username",
+                    "created_at",
+                ],
             )
             await _rebuild_table(
                 db,
@@ -225,6 +245,37 @@ async def set_user_tier(telegram_id: int, tier: str) -> None:
         await db.execute(
             "UPDATE users SET subscription_tier = ? WHERE telegram_id = ?",
             (tier, telegram_id),
+        )
+        await db.commit()
+
+
+async def get_chess_usernames(telegram_id: int) -> tuple[str | None, str | None]:
+    """Returns (chesscom_username, lichess_username), used to auto-detect
+    which side the user played from a PGN's [White]/[Black] tags.
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT chesscom_username, lichess_username FROM users WHERE telegram_id = ?",
+            (telegram_id,),
+        )
+        row = await cursor.fetchone()
+        return (row[0], row[1]) if row is not None else (None, None)
+
+
+async def set_chesscom_username(telegram_id: int, username: str) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET chesscom_username = ? WHERE telegram_id = ?",
+            (username, telegram_id),
+        )
+        await db.commit()
+
+
+async def set_lichess_username(telegram_id: int, username: str) -> None:
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        await db.execute(
+            "UPDATE users SET lichess_username = ? WHERE telegram_id = ?",
+            (username, telegram_id),
         )
         await db.commit()
 

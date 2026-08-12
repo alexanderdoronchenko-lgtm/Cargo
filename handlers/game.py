@@ -2,7 +2,13 @@ import html
 
 import chess.pgn
 from aiogram import F, Router
-from aiogram.types import BufferedInputFile, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 import config
 import database
@@ -25,6 +31,15 @@ router = Router()
 
 _MAX_CAPTION_LENGTH = 1024
 
+# Keyed by telegram_id, holding the game awaiting a "white or black?" answer
+# when the side couldn't be auto-detected from stored usernames. Overwritten
+# by any newer game the same user sends before answering — there's only ever
+# one live question per user, and an unanswered older one is stale anyway.
+# This is the one piece of cross-request state in an otherwise stateless
+# codebase (no FSM is used anywhere else), kept deliberately minimal rather
+# than pulling in aiogram's FSM machinery for a single yes/no question.
+_pending_side_choice: dict[int, chess.pgn.Game] = {}
+
 
 async def _get_lang(message: Message) -> str:
     return await database.get_or_create_user(
@@ -32,8 +47,73 @@ async def _get_lang(message: Message) -> str:
     )
 
 
+def _build_side_keyboard(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text=t("side_button_white", lang), callback_data="side:white"),
+                InlineKeyboardButton(text=t("side_button_black", lang), callback_data="side:black"),
+            ]
+        ]
+    )
+
+
+async def _determine_user_side(telegram_id: int, game: chess.pgn.Game) -> str | None:
+    """Matches the PGN's [White]/[Black] tags against the user's stored
+    chess.com/lichess usernames (case-insensitively). Returns None — not a
+    guess — whenever there's no stored username, neither tag matches, or
+    both tags match (e.g. a self-play test game), so the caller can fall
+    back to asking explicitly.
+    """
+    white_tag = (game.headers.get("White") or "").strip().lower()
+    black_tag = (game.headers.get("Black") or "").strip().lower()
+
+    chesscom_username, lichess_username = await database.get_chess_usernames(telegram_id)
+    candidates = {u.strip().lower() for u in (chesscom_username, lichess_username) if u}
+    if not candidates:
+        return None
+
+    white_match = bool(white_tag) and white_tag in candidates
+    black_match = bool(black_tag) and black_tag in candidates
+    if white_match and not black_match:
+        return "white"
+    if black_match and not white_match:
+        return "black"
+    return None
+
+
 async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> None:
     telegram_id = message.from_user.id
+    user_side = await _determine_user_side(telegram_id, game)
+    if user_side is None:
+        _pending_side_choice[telegram_id] = game
+        await message.answer(t("side_question", lang), reply_markup=_build_side_keyboard(lang))
+        return
+
+    await _run_review(message, lang, game, user_side)
+
+
+@router.callback_query(F.data.in_({"side:white", "side:black"}))
+async def handle_side_choice(callback: CallbackQuery) -> None:
+    telegram_id = callback.from_user.id
+    lang = await database.get_or_create_user(
+        telegram_id, callback.from_user.username, callback.from_user.language_code
+    )
+    game = _pending_side_choice.pop(telegram_id, None)
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+    if game is None:
+        await callback.answer()
+        await callback.message.answer(t("side_choice_expired", lang))
+        return
+
+    user_side = callback.data.split(":", 1)[1]
+    await callback.answer()
+    await _run_review(callback.message, lang, game, user_side)
+
+
+async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_side: str) -> None:
+    telegram_id = message.chat.id
     if telegram_id != config.ADMIN_USER_ID:
         tier = await database.get_user_tier(telegram_id)
         remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
@@ -48,14 +128,18 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
     await message.answer(t("analyzing", lang))
 
     try:
-        analysis = await analyze_game(game)
+        analysis = await analyze_game(game, user_side=user_side)
     except EngineError:
         await message.answer(t("engine_error", lang))
         return
 
     await usage_service.record_analysis(telegram_id)
 
-    critical_moments = analysis.moments
+    # Only the user's own moves — the whole point of this filter is that the
+    # bot must comment on the game from the user's perspective, not the
+    # opponent's, and the "ты"-voice prompts in commentary_service assume
+    # every moment handed to them belongs to a single player.
+    critical_moments = [m for m in analysis.moments if m.side == user_side]
     if not critical_moments:
         await message.answer(t("no_critical_moments", lang))
         return
