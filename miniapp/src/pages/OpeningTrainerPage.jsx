@@ -3,7 +3,7 @@ import { Chess } from 'chess.js';
 import Board from '../components/Board';
 import { fetchOpenings } from '../lib/api';
 import { getTelegramUser } from '../lib/telegram';
-import { useTranslation } from '../lib/i18n';
+import { useTranslation, pickLocalized } from '../lib/i18n';
 
 const OPPONENT_MOVE_DELAY_MS = 500;
 
@@ -27,7 +27,7 @@ function randomChild(node) {
 }
 
 export default function OpeningTrainerPage() {
-  const { t } = useTranslation();
+  const { t, lang } = useTranslation();
   // loading | restricted | error | playing | opponent-moving | failed | completed
   const [status, setStatus] = useState('loading');
   const [openingsPool, setOpeningsPool] = useState([]);
@@ -123,10 +123,10 @@ export default function OpeningTrainerPage() {
 
       // Legal chess move, but not the repertoire's move: fen is left
       // untouched (Board snaps back) and the correct move + comment show.
-      setMistake({ correctSan: cleanSan(expectedSan), comment: currentNode.comment });
+      setMistake({ correctSan: cleanSan(expectedSan), comment: pickLocalized(currentNode.comment, lang) });
       setStatus('failed');
     },
-    [status, currentNode, currentRoot, moveIndex, fen, advance],
+    [status, currentNode, currentRoot, moveIndex, fen, advance, lang],
   );
 
   const continueAfterMistake = useCallback(() => {
@@ -169,8 +169,8 @@ export default function OpeningTrainerPage() {
       {fen && currentRoot && (
         <>
           <p data-testid="opening-caption" className="text-center font-mono text-xs text-ink-muted">
-            {currentRoot.name}
-            {currentNode && currentNode !== currentRoot ? ` · ${currentNode.name}` : ''}
+            {pickLocalized(currentRoot.name, lang)}
+            {currentNode && currentNode !== currentRoot ? ` · ${pickLocalized(currentNode.name, lang)}` : ''}
           </p>
 
           <Board fen={fen} onMove={handleMove} orientation={currentRoot.side} />

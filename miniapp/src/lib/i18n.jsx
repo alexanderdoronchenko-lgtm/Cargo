@@ -40,6 +40,16 @@ export function pluralizeDays(n, lang) {
   return 'дней';
 }
 
+// For bilingual data fields from the backend (e.g. an opening's name/
+// comment in data/openings.json — {"ru": "...", "en": "..."}), not for
+// locale keys. Same fallback order as translate(): requested language,
+// then DEFAULT_LANG, then whatever's there.
+export function pickLocalized(field, lang) {
+  if (field == null) return '';
+  if (typeof field === 'string') return field;
+  return field[lang] ?? field[DEFAULT_LANG] ?? Object.values(field)[0] ?? '';
+}
+
 const LanguageContext = createContext({ lang: DEFAULT_LANG, t: (key) => key });
 
 export function LanguageProvider({ children }) {
