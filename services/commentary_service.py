@@ -104,16 +104,27 @@ _EXPLANATIONS_SCHEMA = {
     "additionalProperties": False,
 }
 
-# Calibrated against chess_style_corpus.md: 39 per-move annotations, average
-# 72.9 characters, approximated at ~2.5 chars/token for Cyrillic text (a
-# conservative ratio — the real Claude tokenizer usually does a bit better)
-# -> ~29 tokens/annotation, +20% headroom -> ~35. Recalibrate precisely with
+# Recalibrated against the current chess_style_corpus.md: 38 per-move
+# annotations, average 79.8 characters but up to 160 for the longest ones —
+# the previous calibration (72.9 avg, no allowance for the long tail) was
+# too tight for real per-moment variance, and got worse once the prompt
+# started asking for compound explanations (what was good + what went
+# wrong, for mistakes) that tend to run longer than a single bare corpus
+# annotation. This is why strength/mistake captions were coming back empty
+# in production: later items in a 12-moment batch ran the response out of
+# budget, and the model closed out the JSON with an empty "explanation"
+# rather than leaving it malformed.
+#
+# ~160 chars at a conservative ~2.2 chars/token for Cyrillic -> ~73
+# tokens for the longest real content alone, rounded up generously for the
+# compound-instruction overhead -> 120. Recalibrate precisely with
 # `scripts/calibrate_caption_tokens.py` (uses the real tokenizer via
-# messages.count_tokens) once a real ANTHROPIC_API_KEY is available.
-_AVG_EXPLANATION_TOKENS_WITH_HEADROOM = 35
-_JSON_OVERHEAD_PER_MOMENT = 20  # field names + punctuation for one array item
+# messages.count_tokens) once a real ANTHROPIC_API_KEY is available — these
+# are a conservative manual estimate, not a measured one.
+_AVG_EXPLANATION_TOKENS_WITH_HEADROOM = 120
+_JSON_OVERHEAD_PER_MOMENT = 30  # field names + punctuation for one array item
 _JSON_WRAPPER_OVERHEAD = 10  # the {"moments": [...]} envelope
-_MIN_MAX_TOKENS = 150
+_MIN_MAX_TOKENS = 400
 
 
 def _calibrated_max_tokens(moment_count: int) -> int:
@@ -203,7 +214,18 @@ async def generate_moment_explanations(
     return explanations, usage
 
 
-_SUMMARY_MAX_TOKENS = 500
+# The corpus's own closing blocks are short — measured at 145-180 characters
+# total across all 8 examples (one evaluative phrase + 3-4 one-line notes).
+# 500 was already generous for that content alone, yet real runs were
+# truncating mid-sentence — the likely cause is the same one already
+# documented on generate_moment_explanations' call above: without
+# `thinking` explicitly disabled, this call had no headroom carved out for
+# it and no guarantee thinking tokens wouldn't eat into the 500-token
+# budget before any visible text got written. Fixed by disabling thinking
+# here too, plus a bump for margin and a tighter prompt (see below) so the
+# model doesn't try to restate the whole game instead of just the closing
+# block.
+_SUMMARY_MAX_TOKENS = 700
 
 
 async def generate_game_summary(
@@ -220,19 +242,27 @@ async def generate_game_summary(
         f"Точность партии по движку: {accuracy_pct:.1f}%.\n\n"
         "Отмеченные моменты партии для контекста (они уже прокомментированы "
         f"отдельно, не нужно пересказывать каждый):\n\n{_format_moments(critical_moments)}\n\n"
-        "Напиши короткую итоговую сводку партии — как в конце разборов в "
-        "примерах выше: сначала оценочная фраза вместе с процентом точности "
-        f"({accuracy_pct:.1f}%), затем по одной короткой строке на дебют, на "
-        "тактику/стратегию и на эндшпиль, опираясь на то, что реально было в "
-        "партии (моменты выше и то, в какой стадии партии они случились). "
-        "Обычный текст, без разметки и без списков, в своей обычной манере. "
-        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру, что в "
-        "примерах выше, даже если примеры на другом языке."
+        "Напиши ТОЛЬКО короткую итоговую сводку партии — тот блок, которым "
+        "заканчивается каждый разбор в примерах выше (после «По общей оценке "
+        "у тебя:»), и ничего больше: без вступления, без пересказа отдельных "
+        "ходов, без заключения после сводки. Сначала оценочная фраза вместе "
+        f"с процентом точности ({accuracy_pct:.1f}%), затем по одной короткой "
+        "строке (одно-два предложения, не абзац) на дебют, на тактику/"
+        "стратегию и на эндшпиль, опираясь на то, что реально было в партии "
+        "(моменты выше и то, в какой стадии партии они случились). В "
+        "примерах выше эта сводка целиком — 3-5 коротких строк, ориентируйся "
+        "на тот же объём. Обычный текст, без разметки и без списков, в своей "
+        f"обычной манере. Пиши на языке: {lang_name}, сохраняя тот же стиль и "
+        "манеру, что в примерах выше, даже если примеры на другом языке."
     )
 
     response = await client.messages.create(
         model=config.CLAUDE_MODEL,
         max_tokens=_SUMMARY_MAX_TOKENS,
+        # See the identical note on generate_moment_explanations above —
+        # without this, thinking tokens (if the model reaches for them)
+        # eat into max_tokens with nothing visible to show for it.
+        thinking={"type": "disabled"},
         system=build_system_prompt(),
         messages=[{"role": "user", "content": user_prompt}],
     )
