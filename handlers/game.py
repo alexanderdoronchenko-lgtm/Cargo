@@ -142,6 +142,16 @@ async def handle_pgn_text(message: Message) -> None:
     lang = await _get_lang(message)
     text = message.text
 
+    # Try parsing the message as PGN first — a full PGN can legitimately
+    # contain a chess.com/lichess.org URL inside a tag (e.g. [Site] or
+    # [Link]), which must not be mistaken for "the user only sent a link".
+    # Only fall back to downloading by URL when the text itself isn't a
+    # parseable game (a bare link with no moves).
+    game = parse_pgn(text)
+    if game is not None:
+        await _send_review(message, lang, game)
+        return
+
     url = extract_url(text)
     if url:
         platform = detect_platform(url)
@@ -163,9 +173,4 @@ async def handle_pgn_text(message: Message) -> None:
         await _send_review(message, lang, game)
         return
 
-    game = parse_pgn(text)
-    if game is None:
-        await message.answer(t("game_parse_error", lang))
-        return
-
-    await _send_review(message, lang, game)
+    await message.answer(t("game_parse_error", lang))
