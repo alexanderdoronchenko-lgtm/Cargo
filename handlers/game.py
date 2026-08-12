@@ -1,4 +1,6 @@
 import html
+import logging
+import time
 
 import chess.pgn
 from aiogram import F, Router
@@ -28,6 +30,7 @@ from services import usage_service
 from telegram_format import markdown_to_html, truncate_html
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 _MAX_CAPTION_LENGTH = 1024
 
@@ -114,24 +117,42 @@ async def handle_side_choice(callback: CallbackQuery) -> None:
 
 async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_side: str) -> None:
     telegram_id = message.chat.id
+
+    # Perf instrumentation for the "review takes a minute+" investigation —
+    # three buckets asked for (Stockfish, Claude, Telegram sends) plus the
+    # overall wall time so any gap not covered by those three (board
+    # rendering, DB writes, tier checks) is visible instead of hidden.
+    review_started = time.perf_counter()
+    telegram_time = 0.0
+
+    async def send(coro):
+        nonlocal telegram_time
+        started = time.perf_counter()
+        try:
+            return await coro
+        finally:
+            telegram_time += time.perf_counter() - started
+
     if telegram_id != config.ADMIN_USER_ID:
         tier = await database.get_user_tier(telegram_id)
         remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
         if remaining <= 0:
             if tier == usage_service.TIER_FREE:
-                await message.answer(t("limit_exceeded_free", lang))
+                await send(message.answer(t("limit_exceeded_free", lang)))
             else:
-                await message.answer(t("limit_exceeded", lang, limit=usage_service.daily_limit(tier)))
+                await send(message.answer(t("limit_exceeded", lang, limit=usage_service.daily_limit(tier))))
             return
 
-    await message.answer(t("game_received", lang, count=count_moves(game)))
-    await message.answer(t("analyzing", lang))
+    await send(message.answer(t("game_received", lang, count=count_moves(game))))
+    await send(message.answer(t("analyzing", lang)))
 
+    stockfish_started = time.perf_counter()
     try:
         analysis = await analyze_game(game, user_side=user_side)
     except EngineError:
-        await message.answer(t("engine_error", lang))
+        await send(message.answer(t("engine_error", lang)))
         return
+    stockfish_elapsed = time.perf_counter() - stockfish_started
 
     await usage_service.record_analysis(telegram_id)
 
@@ -141,7 +162,7 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     # every moment handed to them belongs to a single player.
     critical_moments = [m for m in analysis.moments if m.side == user_side]
     if not critical_moments:
-        await message.answer(t("no_critical_moments", lang))
+        await send(message.answer(t("no_critical_moments", lang)))
         return
 
     # Logged for /progress and targeted puzzle selection (all mistakes, not
@@ -159,7 +180,9 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
 
     moments_for_captions = select_top_moments(critical_moments)
 
+    explanations_started = time.perf_counter()
     explanations, token_usage = await generate_moment_explanations(moments_for_captions, lang)
+    claude_explanations_elapsed = time.perf_counter() - explanations_started
     await database.log_token_usage(
         telegram_id, token_usage.input_tokens, token_usage.output_tokens, token_usage.cached_tokens
     )
@@ -188,15 +211,19 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
             # review noticeably thinner.
             continue
         photo_bytes = render_position_png(moment.fen_after, moment.move_uci, moment.best_move_uci)
-        await message.answer_photo(
-            BufferedInputFile(photo_bytes, filename="position.png"),
-            caption=truncate_html(markdown_to_html(caption), _MAX_CAPTION_LENGTH),
+        await send(
+            message.answer_photo(
+                BufferedInputFile(photo_bytes, filename="position.png"),
+                caption=truncate_html(markdown_to_html(caption), _MAX_CAPTION_LENGTH),
+            )
         )
 
     # Grounded in every flagged moment across the whole game, not just the
     # subset that fit in moments_for_captions, so the summary's per-phase
     # lines reflect the full game the accuracy number was computed from.
+    summary_started = time.perf_counter()
     summary, summary_usage = await generate_game_summary(critical_moments, analysis.accuracy_pct, lang)
+    claude_summary_elapsed = time.perf_counter() - summary_started
     await database.log_token_usage(
         telegram_id, summary_usage.input_tokens, summary_usage.output_tokens, summary_usage.cached_tokens
     )
@@ -204,7 +231,24 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     # message still goes out under parse_mode=HTML — escape defensively so
     # an incidental "<", ">" or "&" in the model's prose can't be misparsed
     # as markup and reject the send.
-    await message.answer(html.escape(summary))
+    await send(message.answer(html.escape(summary)))
+
+    total_elapsed = time.perf_counter() - review_started
+    claude_total = claude_explanations_elapsed + claude_summary_elapsed
+    logger.info(
+        "Review timing telegram_id=%s moments=%d: stockfish=%.2fs "
+        "claude_explanations=%.2fs claude_summary=%.2fs claude_total=%.2fs "
+        "telegram_sends=%.2fs other=%.2fs total=%.2fs",
+        telegram_id,
+        len(moments_for_captions),
+        stockfish_elapsed,
+        claude_explanations_elapsed,
+        claude_summary_elapsed,
+        claude_total,
+        telegram_time,
+        total_elapsed - stockfish_elapsed - claude_total - telegram_time,
+        total_elapsed,
+    )
 
 
 @router.message(F.document)
