@@ -108,6 +108,48 @@ _EXPLANATION_MAX_TOKENS = 250
 _SUMMARY_MAX_TOKENS = 700
 
 
+async def _warm_prompt_cache(semaphore: asyncio.Semaphore) -> TokenUsage:
+    """Writes the system prompt's cache entry with a single throwaway call
+    *before* the real fan-out in generate_review, so every one of the N
+    concurrent calls below reads an already-warm cache instead of racing to
+    write it themselves.
+
+    A cache entry only becomes readable once some request has finished
+    writing it — firing N calls with an identical system prompt at the same
+    instant (as generate_review's asyncio.gather does) means several of
+    them start before any entry exists, so each pays full (cache-creation)
+    price for the ~3800-token corpus independently. Confirmed in
+    production: 9239 non-cached input tokens across one 10-call batch is
+    almost exactly 2-3 redundant writes of that corpus (3778 tokens each),
+    not per-call game context — each call's own user content is already
+    just one moment's data (~60-100 tokens), not the whole game.
+
+    max_tokens=0 returns as soon as the cache write completes with zero
+    output tokens billed — cheaper and faster than waiting on a real call
+    to prime the cache incidentally.
+    """
+    try:
+        async with semaphore:
+            response = await client.messages.create(
+                model=config.CLAUDE_MODEL,
+                max_tokens=0,
+                thinking={"type": "disabled"},
+                system=build_system_prompt(),
+                messages=[{"role": "user", "content": "warmup"}],
+            )
+    except Exception:
+        # Best-effort only — if this fails, the real calls below just fall
+        # back to today's behavior (each may or may not hit a warm cache),
+        # not a failed review.
+        return TokenUsage(0, 0, 0)
+
+    return TokenUsage(
+        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_tokens=response.usage.cache_read_input_tokens,
+    )
+
+
 async def _generate_moment_explanation(
     moment: CriticalMoment, language: str, semaphore: asyncio.Semaphore
 ) -> tuple[str, TokenUsage]:
@@ -251,11 +293,20 @@ async def generate_review(
     summary — it just falls back to the empty-explanation path each caller
     already handles (mistake fallback caption / skipped strength card /
     skipped summary message).
+
+    Runs a cache-warming call first (see _warm_prompt_cache) so the N
+    concurrent calls below all read a warm system-prompt cache instead of
+    racing to write it — without this, several of them miss the cache
+    simultaneously and each pays full price for the ~3800-token corpus
+    independently (confirmed in production: 9239 non-cached input tokens on
+    one 10-call batch, consistent with 2-3 redundant writes).
     """
     if not caption_moments:
         return [], "", TokenUsage(0, 0, 0)
 
     semaphore = _claude_semaphore
+
+    total_usage = await _warm_prompt_cache(semaphore)
 
     explanation_tasks = [
         _generate_moment_explanation(moment, language, semaphore) for moment in caption_moments
@@ -266,7 +317,6 @@ async def generate_review(
     *explanation_results, summary_result = results
 
     explanations = []
-    total_usage = TokenUsage(0, 0, 0)
     for result in explanation_results:
         if isinstance(result, BaseException):
             explanations.append("")
