@@ -2,8 +2,8 @@
 written in the style captured by chess_style_corpus.md, via the Claude API
 (model: claude-sonnet-5).
 """
+import asyncio
 import functools
-import json
 from dataclasses import dataclass
 
 import config
@@ -83,74 +83,142 @@ def _format_moments(moments: list[CriticalMoment]) -> str:
     return "\n".join(lines)
 
 
-_REVIEW_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "moments": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "move_number": {"type": "integer"},
-                    "side": {"type": "string", "enum": ["white", "black"]},
-                    "explanation": {"type": "string"},
-                },
-                "required": ["move_number", "side", "explanation"],
-                "additionalProperties": False,
-            },
-        },
-        "summary": {"type": "string"},
-    },
-    "required": ["moments", "summary"],
-    "additionalProperties": False,
-}
-
-# Recalibrated against the current chess_style_corpus.md: 38 per-move
-# annotations, average 79.8 characters but up to 160 for the longest ones —
-# the previous calibration (72.9 avg, no allowance for the long tail) was
-# too tight for real per-moment variance, and got worse once the prompt
-# started asking for compound explanations (what was good + what went
-# wrong, for mistakes) that tend to run longer than a single bare corpus
-# annotation. This is why strength/mistake captions were coming back empty
-# in production: later items in a 12-moment batch ran the response out of
-# budget, and the model closed out the JSON with an empty "explanation"
-# rather than leaving it malformed.
-#
-# ~160 chars at a conservative ~2.2 chars/token for Cyrillic -> ~73
-# tokens for the longest real content alone, rounded up generously for the
-# compound-instruction overhead -> 120. Recalibrate precisely with
-# `scripts/calibrate_caption_tokens.py` (uses the real tokenizer via
-# messages.count_tokens) once a real ANTHROPIC_API_KEY is available — these
-# are a conservative manual estimate, not a measured one.
-_AVG_EXPLANATION_TOKENS_WITH_HEADROOM = 120
-_JSON_OVERHEAD_PER_MOMENT = 30  # field names + punctuation for one array item
-_JSON_WRAPPER_OVERHEAD = 10  # the {"moments": [...]} envelope
-_MIN_MAX_TOKENS = 400
-
-
-def _calibrated_max_tokens(moment_count: int) -> int:
-    per_moment = _AVG_EXPLANATION_TOKENS_WITH_HEADROOM + _JSON_OVERHEAD_PER_MOMENT
-    return max(_MIN_MAX_TOKENS, _JSON_WRAPPER_OVERHEAD + per_moment * moment_count)
-
-
 @dataclass
 class TokenUsage:
     input_tokens: int
     output_tokens: int
     cached_tokens: int
 
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        return TokenUsage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.cached_tokens + other.cached_tokens,
+        )
+
+
+# A single explanation's real content tops out around 160 characters in the
+# corpus (~73 tokens at ~2.2 chars/token for Cyrillic) — no JSON envelope
+# overhead now that each call returns one plain-text explanation instead of
+# a shared array, so the margin above that is pure generation headroom.
+_EXPLANATION_MAX_TOKENS = 250
 
 # The corpus's own closing blocks are short — measured at 145-180 characters
 # total across all 8 examples (one evaluative phrase + 3-4 one-line notes).
-# 500 was already generous for that content alone, yet real runs were
-# truncating mid-sentence — the likely cause is the same one documented on
-# the explanations call below: without `thinking` explicitly disabled, a
-# call has no headroom carved out for it and no guarantee thinking tokens
-# wouldn't eat into the budget before any visible text got written. Fixed by
-# disabling thinking, plus a bump for margin and a tighter prompt so the
-# model doesn't try to restate the whole game instead of just the closing
-# block.
 _SUMMARY_MAX_TOKENS = 700
+
+
+async def _generate_moment_explanation(
+    moment: CriticalMoment, language: str, semaphore: asyncio.Semaphore
+) -> tuple[str, TokenUsage]:
+    """One Claude call per moment instead of a shared batch call — run
+    concurrently (see generate_review) so wall time tracks the slowest
+    individual call instead of the sum of all of them, at the cost of
+    firing more requests (bounded by `semaphore` against Anthropic rate
+    limits).
+    """
+    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+
+    user_prompt = (
+        "Вот отмеченный момент партии — указан его тип: ОШИБКА (потеря в "
+        "оценке по движку больше 100 сантипешек) или СИЛЬНЫЙ ХОД (совпадение "
+        "с лучшим ходом движка в непростой позиции, либо заметный прирост "
+        f"оценки без простого взятия материала):\n\n{_format_moments([moment])}\n\n"
+        "Напиши отдельное объяснение в своей манере — живой комментарий "
+        "тренера, а не механический вердикт «ошибка/не ошибка», и НИКОГДА не "
+        "оставляй объяснение пустым — оно должно быть содержательным, без "
+        "исключений. "
+        "Для ОШИБКИ: как и в примерах выше, можно сначала коротко отметить, что "
+        "было хорошо в позиции или замысле перед сбоем, прежде чем объяснить сам "
+        "промах — но объяснение должно оставаться правдивым: перед тобой реальная "
+        "ошибка, не выдумывай похвалу самому ходу. "
+        "Для СИЛЬНОГО ХОДА пиши по той же конкретной схеме, что и для ошибки: "
+        "сначала — что именно даёт этот ход (материал, позиционный перевес, атаку "
+        "на короля, инициативу), затем — почему это было не очевидно или сложно "
+        "найти (например, единственный ход, спасающий партию, тихий манёвр без "
+        "размена, который легко пропустить, или точный расчёт варианта). Не "
+        "ограничивайся общими словами вроде «отличный ход» — назови конкретный "
+        "эффект хода, так же предметно, как объясняешь ошибки. Это будет подпись "
+        "под картинкой позиции в Telegram, поэтому объяснение должно быть "
+        "коротким — 1-3 предложения по существу, без вступлений. "
+        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру объяснения, что "
+        "в примерах выше, даже если примеры на другом языке. Для форматирования "
+        "используй **двойные звёздочки** для акцентов и `одинарные обратные кавычки` "
+        "для нотации ходов (например, `Qxf6`) — это конвертируется в HTML на нашей "
+        "стороне. Не используй заголовки, таблицы или другую разметку. Верни ТОЛЬКО "
+        "само объяснение — без вступлений, без повторения хода, без кавычек вокруг "
+        "текста."
+    )
+
+    async with semaphore:
+        response = await client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=_EXPLANATION_MAX_TOKENS,
+            # Formulaic style-mimicry, not a reasoning task — disabling
+            # thinking keeps the tight budget entirely for visible output.
+            thinking={"type": "disabled"},
+            # No sampling controls on this model: claude-sonnet-5 rejects
+            # temperature/top_p/top_k entirely (400 invalid_request_error) —
+            # there is no server-side knob for determinism here. The
+            # empty-explanation bug this used to guard against is instead
+            # addressed by the "never leave explanation empty" directive and
+            # the concrete mistake/strength instructions above.
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+    explanation = "".join(block.text for block in response.content if block.type == "text").strip()
+    usage = TokenUsage(
+        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_tokens=response.usage.cache_read_input_tokens,
+    )
+    return explanation, usage
+
+
+async def _generate_game_summary(
+    all_moments: list[CriticalMoment], accuracy_pct: float, language: str, semaphore: asyncio.Semaphore
+) -> tuple[str, TokenUsage]:
+    """Returns the short end-of-game summary described by the corpus — an
+    evaluative phrase with the accuracy percentage, plus one line each on
+    the opening, tactics/strategy, and the endgame.
+    """
+    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+
+    user_prompt = (
+        f"Точность партии по движку: {accuracy_pct:.1f}%.\n\n"
+        "Отмеченные моменты партии для контекста (они уже прокомментированы "
+        f"отдельно, не нужно пересказывать каждый):\n\n{_format_moments(all_moments)}\n\n"
+        "Напиши ТОЛЬКО короткую итоговую сводку партии — тот блок, которым "
+        "заканчивается каждый разбор в примерах выше (после «По общей оценке "
+        "у тебя:»), и ничего больше: без вступления, без пересказа отдельных "
+        "ходов, без заключения после сводки. Сначала оценочная фраза вместе "
+        f"с процентом точности ({accuracy_pct:.1f}%), затем по одной короткой "
+        "строке (одно-два предложения, не абзац) на дебют, на тактику/"
+        "стратегию и на эндшпиль, опираясь на то, что реально было в партии "
+        "(моменты выше и то, в какой стадии партии они случились). В "
+        "примерах выше эта сводка целиком — 3-5 коротких строк, ориентируйся "
+        "на тот же объём. Обычный текст, без разметки и без списков, в своей "
+        f"обычной манере. Пиши на языке: {lang_name}, сохраняя тот же стиль и "
+        "манеру, что в примерах выше, даже если примеры на другом языке."
+    )
+
+    async with semaphore:
+        response = await client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=_SUMMARY_MAX_TOKENS,
+            thinking={"type": "disabled"},
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": user_prompt}],
+        )
+
+    summary = "".join(block.text for block in response.content if block.type == "text").strip()
+    usage = TokenUsage(
+        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_tokens=response.usage.cache_read_input_tokens,
+    )
+    return summary, usage
 
 
 async def generate_review(
@@ -160,122 +228,46 @@ async def generate_review(
     language: str,
 ) -> tuple[list[str], str, TokenUsage]:
     """Returns (per-moment explanations for `caption_moments` in order, the
-    closing game summary grounded in `all_moments`, token usage), from a
-    single Claude call.
+    closing game summary grounded in `all_moments`, combined token usage).
 
-    Merged from two sequential calls (explanations, then summary) into one —
-    production timing showed the pair costing ~23s combined, and a chunk of
-    that was the second call's own fixed round-trip/prompt-processing
-    overhead rather than generation time. The trade-off: a malformed or
-    truncated response now loses both outputs together instead of only one
-    (see the parsing fallback below) — accepted since a schema-constrained
-    JSON response is already the rare-failure case, not the common one.
+    Fires one Claude call per caption moment plus one summary call, all
+    concurrently — bounded by config.CLAUDE_MAX_CONCURRENT_REQUESTS against
+    Anthropic rate limits — instead of one sequential-turn batch call. Wall
+    time now tracks the slowest individual call rather than the sum of all
+    of them (production measured ~20-26s for a sequential/merged batch of
+    9-12 moments; individual calls are each a few seconds). This also
+    isolates failures: one moment's call raising doesn't take down the
+    others or the summary — it just falls back to the empty-explanation
+    path each caller already handles (mistake fallback caption / skipped
+    strength card / skipped summary message).
     """
     if not caption_moments:
         return [], "", TokenUsage(0, 0, 0)
 
-    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+    semaphore = asyncio.Semaphore(config.CLAUDE_MAX_CONCURRENT_REQUESTS)
 
-    if len(all_moments) == len(caption_moments):
-        summary_context = "Для итоговой сводки опирайся на тот же список моментов, что и выше."
-    else:
-        # all_moments is the full, uncapped list of flagged moments (before
-        # select_top_moments trims it to the handful that get individual
-        # captions) — the summary should still be grounded in everything
-        # that happened, not just the subset shown as photo cards.
-        summary_context = (
-            "Для итоговой сводки, в отличие от индивидуальных объяснений выше, "
-            "опирайся на ПОЛНЫЙ список отмеченных моментов партии (включая те, "
-            f"что не вошли в список для отдельных объяснений):\n\n{_format_moments(all_moments)}"
-        )
-
-    user_prompt = (
-        "Вот отмеченные моменты партии, по порядку — у каждого указан тип: "
-        "ОШИБКА (потеря в оценке по движку больше 100 сантипешек) или СИЛЬНЫЙ ХОД "
-        "(совпадение с лучшим ходом движка в непростой позиции, либо заметный "
-        f"прирост оценки без простого взятия материала):\n\n{_format_moments(caption_moments)}\n\n"
-        "ЗАДАЧА 1 — для КАЖДОГО момента из списка выше напиши отдельное "
-        "объяснение в своей манере — живой комментарий тренера, а не "
-        "механический вердикт «ошибка/не ошибка», и НИКОГДА не оставляй "
-        "объяснение пустым — у каждого момента должно быть содержательное "
-        "объяснение, без исключений. "
-        "Для ОШИБОК: как и в примерах выше, можно сначала коротко отметить, что "
-        "было хорошо в позиции или замысле перед сбоем, прежде чем объяснить сам "
-        "промах — но объяснение должно оставаться правдивым: перед тобой реальная "
-        "ошибка, не выдумывай похвалу самому ходу. "
-        "Для СИЛЬНЫХ ХОДОВ пиши по той же конкретной схеме, что и для ошибок: "
-        "сначала — что именно даёт этот ход (материал, позиционный перевес, атаку "
-        "на короля, инициативу), затем — почему это было не очевидно или сложно "
-        "найти (например, единственный ход, спасающий партию, тихий манёвр без "
-        "размена, который легко пропустить, или точный расчёт варианта). Не "
-        "ограничивайся общими словами вроде «отличный ход» — назови конкретный "
-        "эффект хода, так же предметно, как объясняешь ошибки. Каждое объяснение "
-        "будет подписью под картинкой позиции в Telegram, поэтому оно должно быть "
-        "коротким — 1-3 предложения по существу, без вступлений. Для форматирования "
-        "используй **двойные звёздочки** для акцентов и `одинарные обратные кавычки` "
-        "для нотации ходов (например, `Qxf6`) — это конвертируется в HTML на нашей "
-        "стороне. Не используй заголовки, таблицы или другую разметку. Верни ровно "
-        "один объект на каждый момент из списка выше, в том же порядке — в поле "
-        '"moments".\n\n'
-        f"ЗАДАЧА 2 — точность партии по движку: {accuracy_pct:.1f}%. {summary_context}\n\n"
-        'Напиши короткую итоговую сводку партии в поле "summary" — тот блок, '
-        "которым заканчивается каждый разбор в примерах выше (после «По общей "
-        "оценке у тебя:»), и ничего больше: без вступления, без пересказа "
-        "отдельных ходов, без заключения после сводки. Сначала оценочная фраза "
-        f"вместе с процентом точности ({accuracy_pct:.1f}%), затем по одной "
-        "короткой строке (одно-два предложения, не абзац) на дебют, на тактику/"
-        "стратегию и на эндшпиль, опираясь на то, что реально было в партии. В "
-        "примерах выше эта сводка целиком — 3-5 коротких строк, ориентируйся на "
-        "тот же объём. Обычный текст, без разметки и без списков, в своей "
-        "обычной манере.\n\n"
-        f"Обе задачи пиши на языке: {lang_name}, сохраняя тот же стиль и манеру, "
-        "что в примерах выше, даже если примеры на другом языке."
-    )
-
-    response = await client.messages.create(
-        model=config.CLAUDE_MODEL,
-        max_tokens=_calibrated_max_tokens(len(caption_moments)) + _SUMMARY_MAX_TOKENS,
-        # Formulaic style-mimicry, not a reasoning task, and the calibrated
-        # max_tokens above has no headroom for unpredictable thinking spend —
-        # disabling it keeps the budget entirely for the visible JSON output.
-        thinking={"type": "disabled"},
-        # No sampling controls on this model: claude-sonnet-5 rejects
-        # temperature/top_p/top_k entirely (400 invalid_request_error) — there
-        # is no server-side knob for determinism here. The empty-explanation
-        # bug this used to guard against (observed in production for
-        # strength-type moments) is instead addressed by the "never leave
-        # explanation empty" directive and the concrete, symmetric
-        # mistake/strength instructions above — prompt-only determinism.
-        output_config={
-            "effort": "medium",
-            "format": {"type": "json_schema", "schema": _REVIEW_SCHEMA},
-        },
-        system=build_system_prompt(),
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-
-    text = next(block.text for block in response.content if block.type == "text")
-    try:
-        data = json.loads(text)
-        explanations_by_key = {
-            (item["move_number"], item["side"]): item["explanation"] for item in data["moments"]
-        }
-        summary = data["summary"].strip()
-    except (json.JSONDecodeError, KeyError, TypeError):
-        # A response cut off mid-JSON (tight max_tokens, longer-than-usual
-        # explanations) shouldn't crash the whole review — fall back to the
-        # per-moment default caption and a skipped summary message in the
-        # handler instead.
-        explanations_by_key = {}
-        summary = ""
-
-    explanations = [
-        explanations_by_key.get((m.move_number, m.side), "") for m in caption_moments
+    explanation_tasks = [
+        _generate_moment_explanation(moment, language, semaphore) for moment in caption_moments
     ]
+    summary_task = _generate_game_summary(all_moments, accuracy_pct, language, semaphore)
 
-    usage = TokenUsage(
-        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
-        output_tokens=response.usage.output_tokens,
-        cached_tokens=response.usage.cache_read_input_tokens,
-    )
-    return explanations, summary, usage
+    results = await asyncio.gather(*explanation_tasks, summary_task, return_exceptions=True)
+    *explanation_results, summary_result = results
+
+    explanations = []
+    total_usage = TokenUsage(0, 0, 0)
+    for result in explanation_results:
+        if isinstance(result, BaseException):
+            explanations.append("")
+            continue
+        explanation, usage = result
+        explanations.append(explanation)
+        total_usage = total_usage + usage
+
+    if isinstance(summary_result, BaseException):
+        summary = ""
+    else:
+        summary, usage = summary_result
+        total_usage = total_usage + usage
+
+    return explanations, summary, total_usage

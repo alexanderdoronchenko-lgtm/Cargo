@@ -14,11 +14,21 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 # UCI "Threads" option — lets Stockfish search a single position with
-# multiple threads instead of one, cutting per-ply analysis time on
-# multi-core servers. 4 is a conservative default; raise it via env var up
-# to the server's core count (leave at least one core free for the bot
-# process itself and concurrent requests).
-STOCKFISH_THREADS = int(os.getenv("STOCKFISH_THREADS", "4"))
+# multiple worker threads instead of one. Only helps when there are that
+# many real cores to give them: measured on a single pinned core, Threads=4
+# reached a *shallower* effective depth than Threads=1 at the same time
+# budget (11 vs 14 plies on a test position) — Lazy SMP's inter-thread
+# synchronization overhead with no second core to run on, not a speedup.
+# Auto-detecting the core count (capped at 4) keeps the default safe on
+# small single-core droplets without needing manual tuning; override via
+# env var if the server's core count changes.
+STOCKFISH_THREADS = int(os.getenv("STOCKFISH_THREADS", str(min(4, os.cpu_count() or 1))))
+
+# How many Claude API calls the review pipeline may have in flight at once
+# (per-moment explanation calls + the summary call, fired concurrently
+# instead of sequentially). This is bounded by Anthropic rate limits, not
+# local CPU/cores — safe to raise independently of server size.
+CLAUDE_MAX_CONCURRENT_REQUESTS = int(os.getenv("CLAUDE_MAX_CONCURRENT_REQUESTS", "5"))
 
 # Subscription prices in Telegram Stars (XTR), per month.
 RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "600"))
