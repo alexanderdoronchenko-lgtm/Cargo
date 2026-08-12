@@ -243,12 +243,15 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     total_elapsed = time.perf_counter() - review_started
     logger.info(
         "Review timing telegram_id=%s moments=%d: stockfish=%.2fs "
-        "claude=%.2fs (merged explanations+summary) telegram_sends=%.2fs "
-        "other=%.2fs total=%.2fs",
+        "claude=%.2fs (merged explanations+summary, output_tokens=%d "
+        "cached_input_tokens=%d/%d) telegram_sends=%.2fs other=%.2fs total=%.2fs",
         telegram_id,
         len(moments_for_captions),
         stockfish_elapsed,
         claude_elapsed,
+        token_usage.output_tokens,
+        token_usage.cached_tokens,
+        token_usage.input_tokens,
         telegram_time,
         total_elapsed - stockfish_elapsed - claude_elapsed - telegram_time,
         total_elapsed,
