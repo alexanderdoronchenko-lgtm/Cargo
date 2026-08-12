@@ -188,13 +188,13 @@ async def generate_moment_explanations(
         # disabling it keeps the budget entirely for the visible JSON output
         # (and avoids paying for thinking tokens at all).
         thinking={"type": "disabled"},
-        # Without this, the default sampling temperature meant the exact same
-        # prompt could non-deterministically produce an empty "explanation"
-        # for some moments (observed in production for strength-type moments,
-        # whose instruction was vaguer than the mistake one above — now
-        # tightened too, but pinning temperature also removes the run-to-run
-        # variance regardless).
-        temperature=0,
+        # No sampling controls on this model: claude-sonnet-5 rejects
+        # temperature/top_p/top_k entirely (400 invalid_request_error) — there
+        # is no server-side knob for determinism here. The empty-explanation
+        # bug this used to guard against (observed in production for
+        # strength-type moments) is instead addressed by the "never leave
+        # explanation empty" directive and the tightened, equally-concrete
+        # strength-move instructions above — prompt-only determinism.
         output_config={
             "effort": "medium",
             "format": {"type": "json_schema", "schema": _EXPLANATIONS_SCHEMA},
