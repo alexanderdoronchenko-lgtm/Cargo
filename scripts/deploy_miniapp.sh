@@ -110,6 +110,24 @@ server {
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+    # Vite hashes every built filename (index-<hash>.js/.css) — a new build
+    # gets a new hash, so the old file is simply never requested again once
+    # index.html below points at it. Safe to cache for a year.
+    location /assets/ {
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    # index.html is the only file whose name never changes, and it's the
+    # one place that references the current hashed asset filenames — it
+    # must never be cached, or a rebuild never reaches existing clients.
+    # Telegram's in-app WebView caches HTML at the client level in a way
+    # its own "clear cache" doesn't reach, so this has to be enforced here.
+    # The \`= /index.html\` block also covers the try_files fallback below
+    # (an internal redirect to /index.html re-runs location matching).
+    location = /index.html {
+        add_header Cache-Control "no-store, must-revalidate" always;
+    }
+
     location / {
         try_files \$uri \$uri/ /index.html;
     }

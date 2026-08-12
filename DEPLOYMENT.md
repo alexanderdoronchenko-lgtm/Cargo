@@ -47,7 +47,15 @@ Debian/Ubuntu слишком старая для текущего Vite), соб�
 (`npm ci && npm run build`, с `VITE_API_BASE_URL=https://<домен>`),
 заводит systemd-юнит `cargo-api.service` для API (`uvicorn`,
 слушает только `127.0.0.1:8000`, наружу не торчит), настраивает Nginx
-(статика `miniapp/dist/` на `/`, реверс-прокси `/api/` → `127.0.0.1:8000`),
+(статика `miniapp/dist/` на `/`, реверс-прокси `/api/` → `127.0.0.1:8000`,
+`index.html` — `Cache-Control: no-store, must-revalidate` чтобы клиент
+всегда подтягивал свежий HTML со ссылками на актуальные хэши сборки,
+`/assets/` — агрессивный `immutable`-кэш на год, так как у файлов Vite
+хэш меняется на каждой сборке и старая версия просто никогда больше не
+запрашивается; это важно из-за отдельного известного бага: встроенный
+WebView Telegram кэширует HTML на своём уровне так, что штатная очистка
+кэша в Telegram его не берёт — без этих заголовков обновление Mini App
+не долетает до уже открывавших его пользователей),
 получает сертификат через `certbot --nginx` (сам добавляет HTTPS-блок и
 редирект с http на https), **сам прописывает `MINIAPP_URL` в `.env` бота
 и перезапускает `cargo-bot`** — шаги 3-4 ниже он покрывает автоматически.
@@ -64,6 +72,9 @@ LETSENCRYPT_EMAIL=<твой email для уведомлений об истеч�
 certbot не переиздаёт сертификат раньше времени сам по себе.
 
 Проверить: `curl https://<домен>/` → отдаёт `index.html`;
+`curl -I https://<домен>/` → заголовок `Cache-Control: no-store, must-revalidate`;
+`curl -sI https://<домен>/assets/$(curl -s https://<домен>/ | grep -oP 'assets/\K[^"]+\.js' | head -1)`
+→ `Cache-Control: public, max-age=31536000, immutable`;
 `curl https://<домен>/api/audio/tracks` → JSON, не 502;
 `systemctl status nginx cargo-api cargo-bot` → все `active (running)`.
 
