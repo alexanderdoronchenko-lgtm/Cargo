@@ -180,8 +180,10 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
 
     moments_for_captions = select_top_moments(critical_moments)
 
-    # Merged into one Claude call (explanations + summary) instead of two
-    # sequential ones — see generate_review's docstring for why.
+    # One Claude call per caption moment plus one summary call, fired
+    # concurrently (bounded by a global semaphore) — see generate_review's
+    # docstring for why, and for the ceil(N / limit) round-based timing this
+    # actually produces.
     claude_started = time.perf_counter()
     explanations, summary, token_usage = await generate_review(
         moments_for_captions, critical_moments, analysis.accuracy_pct, lang
@@ -241,17 +243,24 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
         )
 
     total_elapsed = time.perf_counter() - review_started
+    # input_tokens/cached_tokens are summed across every parallel Claude call
+    # this review made (moments + 1 summary), not one call — cached_tokens
+    # can legitimately exceed input_tokens here (most calls cheaply read a
+    # cache that only one call had to pay to write), so they're logged as
+    # separate totals rather than a "part/whole" ratio that would look wrong.
     logger.info(
-        "Review timing telegram_id=%s moments=%d: stockfish=%.2fs "
-        "claude=%.2fs (merged explanations+summary, output_tokens=%d "
-        "cached_input_tokens=%d/%d) telegram_sends=%.2fs other=%.2fs total=%.2fs",
+        "Review timing telegram_id=%s moments=%d claude_calls=%d: "
+        "stockfish=%.2fs claude=%.2fs (parallel, output_tokens=%d "
+        "non_cached_input_tokens=%d cached_input_tokens=%d) "
+        "telegram_sends=%.2fs other=%.2fs total=%.2fs",
         telegram_id,
         len(moments_for_captions),
+        len(moments_for_captions) + 1,
         stockfish_elapsed,
         claude_elapsed,
         token_usage.output_tokens,
-        token_usage.cached_tokens,
         token_usage.input_tokens,
+        token_usage.cached_tokens,
         telegram_time,
         total_elapsed - stockfish_elapsed - claude_elapsed - telegram_time,
         total_elapsed,

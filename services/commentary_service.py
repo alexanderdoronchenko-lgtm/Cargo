@@ -221,6 +221,15 @@ async def _generate_game_summary(
     return summary, usage
 
 
+# Module-level, not per-call: created once and shared across every review
+# this process runs, so the concurrency cap is a real *global* bound on
+# concurrent Claude requests (protecting the account's actual rate limit)
+# rather than a per-review bound that multiple simultaneous users could
+# each independently max out (e.g. 2 concurrent reviews at the "per-call"
+# version of this would fire 2x CLAUDE_MAX_CONCURRENT_REQUESTS at once).
+_claude_semaphore = asyncio.Semaphore(config.CLAUDE_MAX_CONCURRENT_REQUESTS)
+
+
 async def generate_review(
     caption_moments: list[CriticalMoment],
     all_moments: list[CriticalMoment],
@@ -231,20 +240,22 @@ async def generate_review(
     closing game summary grounded in `all_moments`, combined token usage).
 
     Fires one Claude call per caption moment plus one summary call, all
-    concurrently — bounded by config.CLAUDE_MAX_CONCURRENT_REQUESTS against
+    concurrently — bounded by the module-level semaphore above against
     Anthropic rate limits — instead of one sequential-turn batch call. Wall
-    time now tracks the slowest individual call rather than the sum of all
-    of them (production measured ~20-26s for a sequential/merged batch of
-    9-12 moments; individual calls are each a few seconds). This also
-    isolates failures: one moment's call raising doesn't take down the
-    others or the summary — it just falls back to the empty-explanation
-    path each caller already handles (mistake fallback caption / skipped
-    strength card / skipped summary message).
+    time tracks ceil(N / CLAUDE_MAX_CONCURRENT_REQUESTS) individual-call
+    latencies rather than the sum of all N (e.g. 11 moments + 1 summary at
+    the default limit of 5 is 3 sequential rounds, not 1 — raise the limit
+    to shrink that further, now that it's a real global cap safe to raise
+    without multiplying risk across concurrent users). This also isolates
+    failures: one moment's call raising doesn't take down the others or the
+    summary — it just falls back to the empty-explanation path each caller
+    already handles (mistake fallback caption / skipped strength card /
+    skipped summary message).
     """
     if not caption_moments:
         return [], "", TokenUsage(0, 0, 0)
 
-    semaphore = asyncio.Semaphore(config.CLAUDE_MAX_CONCURRENT_REQUESTS)
+    semaphore = _claude_semaphore
 
     explanation_tasks = [
         _generate_moment_explanation(moment, language, semaphore) for moment in caption_moments
