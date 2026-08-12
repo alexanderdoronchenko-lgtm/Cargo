@@ -1,0 +1,58 @@
+// Flat key -> string map, same convention as the bot's locales/ru.json:
+// {placeholder} interpolation, one file per language. Kept as a separate,
+// parallel structure from the bot's locales.py (client-side JS vs
+// server-side Python) rather than sharing code.
+export default {
+  tab_puzzles: 'Задачки',
+  tab_trainer: 'Дебютный тренажёр',
+  header_in_telegram: 'открыто в Telegram',
+  header_not_in_telegram: 'не в Telegram — тестовый режим',
+
+  puzzles_eyebrow: '!! Задачки',
+  puzzles_title: 'Тактические задачки',
+  puzzles_intro:
+    'Позиции из партий других игроков — найди лучший ход так же, как это делает движок в разборе. Сложность подстраивается под тебя: решил — следующая чуть сложнее, ошибся — чуть проще.',
+  puzzles_streak_start: 'Начни серию — реши первую задачку сегодня',
+  puzzles_streak_line: '{count} {days} подряд',
+  puzzles_freeze_tooltip: 'Заморозка доступна, если пропустишь день',
+  puzzles_solved_today: 'Сегодня решено: {count}',
+  puzzles_your_rating: 'Твой рейтинг: {rating}',
+  puzzles_puzzle_rating: 'Рейтинг задачи: {rating}',
+  puzzles_load_error: 'Не удалось загрузить задачку.',
+  puzzles_retry: 'Попробовать снова',
+  puzzles_loading: 'Загружаю задачку...',
+  puzzles_targeted_label: '🎯 Задача по твоей слабой стороне: {category}',
+  puzzles_wrong: 'Неверно',
+  puzzles_show_solution: 'Показать решение',
+  puzzles_revealing: 'Показываю решение...',
+  puzzles_solved: 'Решено!',
+  puzzles_solution_shown: 'Решение показано',
+  puzzles_next_puzzle: 'Следующая задача',
+  puzzles_upsell_prefix: 'Прицельный подбор по твоим слабостям доступен на Изумруде и выше — команда',
+  puzzles_upsell_suffix: 'в чате с ботом.',
+
+  category_tactics: 'тактика',
+  category_endgame: 'эндшпиль',
+  category_opening: 'дебютные ошибки',
+  category_positional: 'позиционное понимание',
+
+  trainer_eyebrow: '?! Тренажёр',
+  trainer_intro: 'Отработай дебютные линии, в которых чаще всего сбиваешься, до автоматизма.',
+  trainer_restricted_prefix: 'Дебютный тренажёр доступен на Изумруде и выше — команда',
+  trainer_restricted_suffix: 'в чате с ботом.',
+  trainer_load_error: 'Не удалось загрузить репертуар.',
+  trainer_loading: 'Загружаю тренажёр...',
+  trainer_opponent_moving: 'Ход соперника...',
+  trainer_wrong_move: 'Неверно. Правильный ход: {move}',
+  trainer_continue: 'Продолжить',
+  trainer_completed: 'Вариант пройден!',
+  trainer_next_variant: 'Следующий вариант',
+
+  audio_expand: 'Развернуть плеер',
+  audio_collapse: 'Свернуть плеер',
+  audio_pause: 'Пауза',
+  audio_play: 'Воспроизвести',
+  audio_volume: 'Громкость',
+  audio_mute: 'Выключить звук',
+  audio_unmute: 'Включить звук',
+};

@@ -27,6 +27,27 @@ export async function fetchRandomPuzzle(ratingMin, ratingMax, userId) {
 }
 
 /**
+ * Same resolution the bot itself uses: an existing DB row's stored
+ * language wins, otherwise one is resolved from languageCode and
+ * persisted — see database.get_or_create_user, which this endpoint calls
+ * directly.
+ * @returns {Promise<string>} "ru" or "en"
+ */
+export async function fetchUserLanguage(userId, username, languageCode) {
+  const url = new URL('/api/user', BASE_URL);
+  url.searchParams.set('user_id', userId);
+  if (username != null) url.searchParams.set('username', username);
+  if (languageCode != null) url.searchParams.set('language_code', languageCode);
+
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`User info fetch failed: ${response.status}`);
+  }
+  const data = await response.json();
+  return data.language;
+}
+
+/**
  * @returns {Promise<{solved_today: number, streak_days: number, freeze_available: boolean, freeze_applied: boolean}>}
  */
 export async function fetchPuzzleStats(userId) {

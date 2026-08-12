@@ -3,6 +3,7 @@ import { Chess } from 'chess.js';
 import Board from '../components/Board';
 import { fetchOpenings } from '../lib/api';
 import { getTelegramUser } from '../lib/telegram';
+import { useTranslation } from '../lib/i18n';
 
 const OPPONENT_MOVE_DELAY_MS = 500;
 
@@ -26,6 +27,7 @@ function randomChild(node) {
 }
 
 export default function OpeningTrainerPage() {
+  const { t } = useTranslation();
   // loading | restricted | error | playing | opponent-moving | failed | completed
   const [status, setStatus] = useState('loading');
   const [openingsPool, setOpeningsPool] = useState([]);
@@ -140,29 +142,27 @@ export default function OpeningTrainerPage() {
   return (
     <section className="space-y-4">
       <header>
-        <p className="font-mono text-xs uppercase tracking-wider text-terracotta mb-1">?! Тренажёр</p>
-        <h1 className="font-heading text-2xl font-bold">Дебютный тренажёр</h1>
-        <p className="text-ink-muted text-sm mt-2 max-w-[60ch]">
-          Отработай дебютные линии, в которых чаще всего сбиваешься, до автоматизма.
-        </p>
+        <p className="font-mono text-xs uppercase tracking-wider text-terracotta mb-1">{t('trainer_eyebrow')}</p>
+        <h1 className="font-heading text-2xl font-bold">{t('tab_trainer')}</h1>
+        <p className="text-ink-muted text-sm mt-2 max-w-[60ch]">{t('trainer_intro')}</p>
       </header>
 
       {status === 'restricted' && (
         <div className="rounded-md border border-border bg-bg-elevated p-6 text-center text-sm text-ink-muted">
-          Дебютный тренажёр доступен на Изумруде и выше — команда{' '}
-          <code className="font-mono text-terracotta">/subscribe</code> в чате с ботом.
+          {t('trainer_restricted_prefix')}{' '}
+          <code className="font-mono text-terracotta">/subscribe</code> {t('trainer_restricted_suffix')}
         </div>
       )}
 
       {status === 'error' && (
         <div className="rounded-md border border-border bg-bg-elevated p-6 text-center text-sm text-ink-muted">
-          Не удалось загрузить репертуар.
+          {t('trainer_load_error')}
         </div>
       )}
 
       {status === 'loading' && (
         <div className="rounded-md border border-border bg-bg-elevated p-6 text-center text-sm text-ink-muted">
-          Загружаю тренажёр...
+          {t('trainer_loading')}
         </div>
       )}
 
@@ -176,13 +176,13 @@ export default function OpeningTrainerPage() {
           <Board fen={fen} onMove={handleMove} orientation={currentRoot.side} />
 
           {status === 'opponent-moving' && (
-            <p className="text-center font-mono text-sm text-ink-muted">Ход соперника...</p>
+            <p className="text-center font-mono text-sm text-ink-muted">{t('trainer_opponent_moving')}</p>
           )}
 
           {status === 'failed' && mistake && (
             <div className="space-y-2 rounded-md border border-border bg-bg-elevated p-4 text-center">
               <p className="font-mono text-sm text-red-400">
-                Неверно. Правильный ход: {mistake.correctSan}
+                {t('trainer_wrong_move', { move: mistake.correctSan })}
               </p>
               {mistake.comment && <p className="text-sm text-ink-muted">{mistake.comment}</p>}
               <button
@@ -190,20 +190,20 @@ export default function OpeningTrainerPage() {
                 onClick={continueAfterMistake}
                 className="rounded-sm border border-border bg-bg px-4 py-2 text-sm text-ink"
               >
-                Продолжить
+                {t('trainer_continue')}
               </button>
             </div>
           )}
 
           {status === 'completed' && (
             <div className="space-y-2 text-center">
-              <p className="font-mono text-sm text-terracotta">Вариант пройден!</p>
+              <p className="font-mono text-sm text-terracotta">{t('trainer_completed')}</p>
               <button
                 type="button"
                 onClick={nextVariant}
                 className="rounded-sm bg-terracotta px-4 py-2 text-sm font-medium text-on-accent"
               >
-                Следующий вариант
+                {t('trainer_next_variant')}
               </button>
             </div>
           )}

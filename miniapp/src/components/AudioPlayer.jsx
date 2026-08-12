@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { fetchAudioTracks } from '../lib/api';
+import { useTranslation } from '../lib/i18n';
 
 const OFF_STORAGE_KEY = 'cm_audio_off';
 const VOLUME_STORAGE_KEY = 'cm_audio_volume';
@@ -30,6 +31,7 @@ function prettifyTrackName(filename) {
  * remounts it and never interrupts playback.
  */
 export default function AudioPlayer() {
+  const { t } = useTranslation();
   const [tracks, setTracks] = useState([]);
   const [status, setStatus] = useState('loading'); // loading | ready | empty | error
   const [isPlaying, setIsPlaying] = useState(false);
@@ -115,7 +117,7 @@ export default function AudioPlayer() {
         <button
           type="button"
           onClick={() => setIsExpanded(true)}
-          aria-label="Развернуть плеер"
+          aria-label={t('audio_expand')}
           className="flex h-11 w-11 items-center justify-center rounded-full border border-border bg-bg-elevated text-lg shadow-elevated"
         >
           {isOff ? '🔇' : isPlaying ? '🔊' : '🎵'}
@@ -127,7 +129,7 @@ export default function AudioPlayer() {
             <button
               type="button"
               onClick={() => setIsExpanded(false)}
-              aria-label="Свернуть плеер"
+              aria-label={t('audio_collapse')}
               className="shrink-0 text-ink-muted"
             >
               ✕
@@ -139,7 +141,7 @@ export default function AudioPlayer() {
               type="button"
               onClick={togglePlay}
               disabled={isOff}
-              aria-label={isPlaying ? 'Пауза' : 'Воспроизвести'}
+              aria-label={isPlaying ? t('audio_pause') : t('audio_play')}
               className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-terracotta text-on-accent disabled:opacity-40"
             >
               {isPlaying ? '⏸' : '▶'}
@@ -153,15 +155,15 @@ export default function AudioPlayer() {
               value={volume}
               onChange={handleVolumeChange}
               disabled={isOff}
-              aria-label="Громкость"
+              aria-label={t('audio_volume')}
               className="flex-1 accent-terracotta disabled:opacity-40"
             />
 
             <button
               type="button"
               onClick={toggleOff}
-              aria-label={isOff ? 'Включить звук' : 'Выключить звук'}
-              title={isOff ? 'Включить звук' : 'Выключить звук'}
+              aria-label={isOff ? t('audio_unmute') : t('audio_mute')}
+              title={isOff ? t('audio_unmute') : t('audio_mute')}
               className="shrink-0 text-lg"
             >
               {isOff ? '🔇' : '🔊'}

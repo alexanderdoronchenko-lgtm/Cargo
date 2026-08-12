@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { initTelegram, getTelegramUser, isInsideTelegram } from './lib/telegram';
+import { LanguageProvider, useTranslation } from './lib/i18n';
 import TabBar from './components/TabBar';
 import AudioPlayer from './components/AudioPlayer';
 import PuzzlesPage from './pages/PuzzlesPage';
@@ -7,11 +8,12 @@ import OpeningTrainerPage from './pages/OpeningTrainerPage';
 import logoUrl from '../logo.svg';
 
 const TABS = [
-  { id: 'puzzles', label: 'Задачки', Page: PuzzlesPage },
-  { id: 'trainer', label: 'Дебютный тренажёр', Page: OpeningTrainerPage },
+  { id: 'puzzles', labelKey: 'tab_puzzles', Page: PuzzlesPage },
+  { id: 'trainer', labelKey: 'tab_trainer', Page: OpeningTrainerPage },
 ];
 
-export default function App() {
+function AppShell() {
+  const { t } = useTranslation();
   const [activeTab, setActiveTab] = useState(TABS[0].id);
   const [user, setUser] = useState(null);
   const [inTelegram, setInTelegram] = useState(false);
@@ -23,6 +25,7 @@ export default function App() {
   }, []);
 
   const ActivePage = TABS.find((tab) => tab.id === activeTab).Page;
+  const tabsWithLabels = TABS.map((tab) => ({ ...tab, label: t(tab.labelKey) }));
 
   return (
     <div className="flex min-h-screen flex-col bg-bg text-ink font-body">
@@ -34,8 +37,8 @@ export default function App() {
             {inTelegram
               ? user
                 ? `id ${user.id} · ${user.username ? `@${user.username}` : user.first_name}`
-                : 'открыто в Telegram'
-              : 'не в Telegram — тестовый режим'}
+                : t('header_in_telegram')
+              : t('header_not_in_telegram')}
           </p>
         </div>
       </header>
@@ -46,7 +49,15 @@ export default function App() {
 
       <AudioPlayer />
 
-      <TabBar tabs={TABS} active={activeTab} onChange={setActiveTab} />
+      <TabBar tabs={tabsWithLabels} active={activeTab} onChange={setActiveTab} />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <LanguageProvider>
+      <AppShell />
+    </LanguageProvider>
   );
 }

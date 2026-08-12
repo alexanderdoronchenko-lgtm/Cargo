@@ -220,6 +220,27 @@ async def openings(user_id: int = Query(...)):
     return _load_openings()
 
 
+class UserInfoResponse(BaseModel):
+    language: str
+
+
+@app.get("/api/user", response_model=UserInfoResponse)
+async def user_info(
+    user_id: int = Query(...),
+    username: str | None = Query(None),
+    language_code: str | None = Query(None),
+):
+    """Same resolution the bot itself uses: an existing row's stored
+    language (set via /language) wins over whatever language_code the
+    Telegram client reports today; a first-time user gets one resolved
+    from language_code and persisted. get_or_create_user is the exact
+    function the bot's handlers call, so the two surfaces can never
+    disagree on a given user's language.
+    """
+    language = await database.get_or_create_user(user_id, username, language_code)
+    return UserInfoResponse(language=language)
+
+
 @app.get("/api/audio/tracks")
 async def audio_tracks():
     if not _AUDIO_DIR.is_dir():
