@@ -84,6 +84,11 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
         if explanation.strip():
             caption = explanation.strip()
         elif moment.type == TYPE_MISTAKE:
+            # The mistake fallback still carries real information (the
+            # actual cp loss), so it's worth showing even without Claude's
+            # commentary. A retry isn't worthwhile here either — temperature
+            # is now pinned to 0, so re-sending the identical prompt would
+            # very likely reproduce the same empty result.
             caption = t(
                 "moment_fallback_caption",
                 lang,
@@ -92,12 +97,12 @@ async def _send_review(message: Message, lang: str, game: chess.pgn.Game) -> Non
                 cp_loss=moment.cp_loss,
             )
         else:
-            caption = t(
-                "moment_fallback_caption_strength",
-                lang,
-                move_number=moment.move_number,
-                move_san=moment.move_san,
-            )
+            # A wordless "strong move" caption carries no real information —
+            # skip the card entirely rather than show it. select_top_moments
+            # already caps the review at a handful of moments, so silently
+            # dropping one under this rare failure mode doesn't leave the
+            # review noticeably thinner.
+            continue
         photo_bytes = render_position_png(moment.fen_after, moment.move_uci, moment.best_move_uci)
         await message.answer_photo(
             BufferedInputFile(photo_bytes, filename="position.png"),
