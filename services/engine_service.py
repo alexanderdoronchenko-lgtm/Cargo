@@ -11,7 +11,13 @@ import chess.pgn
 import config
 
 DEFAULT_DEPTH = 18
-DEFAULT_TIME_LIMIT = 1.0
+# Lowered from 1.0s after production timing showed Stockfish analysis
+# (one analyse() call per ply, almost always bound by this time limit
+# rather than by DEFAULT_DEPTH) accounting for ~73% of a review's total
+# latency — 75s of a 103s review on a 12-moment, ~40-move game. 0.4s/ply
+# trades some engine strength for a roughly 2.5x speedup on this stage;
+# combined with Threads below it should cut it further.
+DEFAULT_TIME_LIMIT = 0.4
 DEFAULT_CP_LOSS_THRESHOLD = 100
 
 # A played move that matches the engine's top choice counts as a "strength"
@@ -174,6 +180,10 @@ async def analyze_game(
 
     try:
         board = game.board()
+        # Multi-threaded search per position — set once at startup, applies
+        # to every analyse() call below. Independent of, and stacks with,
+        # the time_limit reduction above.
+        await engine.configure({"Threads": config.STOCKFISH_THREADS})
         # multipv=2 so the "only good move" strength check below can compare
         # the engine's best try against its second-best one. This one call
         # per position is reused as both the "after" evaluation of the

@@ -83,7 +83,7 @@ def _format_moments(moments: list[CriticalMoment]) -> str:
     return "\n".join(lines)
 
 
-_EXPLANATIONS_SCHEMA = {
+_REVIEW_SCHEMA = {
     "type": "object",
     "properties": {
         "moments": {
@@ -98,9 +98,10 @@ _EXPLANATIONS_SCHEMA = {
                 "required": ["move_number", "side", "explanation"],
                 "additionalProperties": False,
             },
-        }
+        },
+        "summary": {"type": "string"},
     },
-    "required": ["moments"],
+    "required": ["moments", "summary"],
     "additionalProperties": False,
 }
 
@@ -139,26 +140,65 @@ class TokenUsage:
     cached_tokens: int
 
 
-async def generate_moment_explanations(
-    critical_moments: list[CriticalMoment], language: str
-) -> tuple[list[str], TokenUsage]:
-    """Returns one Telegram-ready Markdown explanation per critical moment (in
-    order), plus the token usage actually billed for the call.
+# The corpus's own closing blocks are short — measured at 145-180 characters
+# total across all 8 examples (one evaluative phrase + 3-4 one-line notes).
+# 500 was already generous for that content alone, yet real runs were
+# truncating mid-sentence — the likely cause is the same one documented on
+# the explanations call below: without `thinking` explicitly disabled, a
+# call has no headroom carved out for it and no guarantee thinking tokens
+# wouldn't eat into the budget before any visible text got written. Fixed by
+# disabling thinking, plus a bump for margin and a tighter prompt so the
+# model doesn't try to restate the whole game instead of just the closing
+# block.
+_SUMMARY_MAX_TOKENS = 700
+
+
+async def generate_review(
+    caption_moments: list[CriticalMoment],
+    all_moments: list[CriticalMoment],
+    accuracy_pct: float,
+    language: str,
+) -> tuple[list[str], str, TokenUsage]:
+    """Returns (per-moment explanations for `caption_moments` in order, the
+    closing game summary grounded in `all_moments`, token usage), from a
+    single Claude call.
+
+    Merged from two sequential calls (explanations, then summary) into one —
+    production timing showed the pair costing ~23s combined, and a chunk of
+    that was the second call's own fixed round-trip/prompt-processing
+    overhead rather than generation time. The trade-off: a malformed or
+    truncated response now loses both outputs together instead of only one
+    (see the parsing fallback below) — accepted since a schema-constrained
+    JSON response is already the rare-failure case, not the common one.
     """
-    if not critical_moments:
-        return [], TokenUsage(0, 0, 0)
+    if not caption_moments:
+        return [], "", TokenUsage(0, 0, 0)
 
     lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+
+    if len(all_moments) == len(caption_moments):
+        summary_context = "Для итоговой сводки опирайся на тот же список моментов, что и выше."
+    else:
+        # all_moments is the full, uncapped list of flagged moments (before
+        # select_top_moments trims it to the handful that get individual
+        # captions) — the summary should still be grounded in everything
+        # that happened, not just the subset shown as photo cards.
+        summary_context = (
+            "Для итоговой сводки, в отличие от индивидуальных объяснений выше, "
+            "опирайся на ПОЛНЫЙ список отмеченных моментов партии (включая те, "
+            f"что не вошли в список для отдельных объяснений):\n\n{_format_moments(all_moments)}"
+        )
 
     user_prompt = (
         "Вот отмеченные моменты партии, по порядку — у каждого указан тип: "
         "ОШИБКА (потеря в оценке по движку больше 100 сантипешек) или СИЛЬНЫЙ ХОД "
         "(совпадение с лучшим ходом движка в непростой позиции, либо заметный "
-        f"прирост оценки без простого взятия материала):\n\n{_format_moments(critical_moments)}\n\n"
-        "Для КАЖДОГО момента напиши отдельное объяснение в своей манере — живой "
-        "комментарий тренера, а не механический вердикт «ошибка/не ошибка», и "
-        "НИКОГДА не оставляй объяснение пустым — у каждого момента должно быть "
-        "содержательное объяснение, без исключений. "
+        f"прирост оценки без простого взятия материала):\n\n{_format_moments(caption_moments)}\n\n"
+        "ЗАДАЧА 1 — для КАЖДОГО момента из списка выше напиши отдельное "
+        "объяснение в своей манере — живой комментарий тренера, а не "
+        "механический вердикт «ошибка/не ошибка», и НИКОГДА не оставляй "
+        "объяснение пустым — у каждого момента должно быть содержательное "
+        "объяснение, без исключений. "
         "Для ОШИБОК: как и в примерах выше, можно сначала коротко отметить, что "
         "было хорошо в позиции или замысле перед сбоем, прежде чем объяснить сам "
         "промах — но объяснение должно оставаться правдивым: перед тобой реальная "
@@ -169,35 +209,46 @@ async def generate_moment_explanations(
         "найти (например, единственный ход, спасающий партию, тихий манёвр без "
         "размена, который легко пропустить, или точный расчёт варианта). Не "
         "ограничивайся общими словами вроде «отличный ход» — назови конкретный "
-        "эффект хода, так же предметно, как объясняешь ошибки. Это будет "
-        "подпись под картинкой позиции в Telegram, поэтому объяснение должно быть "
-        "коротким — 1-3 предложения по существу, без вступлений. "
-        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру объяснения, что "
-        "в примерах выше, даже если примеры на другом языке. Для форматирования "
+        "эффект хода, так же предметно, как объясняешь ошибки. Каждое объяснение "
+        "будет подписью под картинкой позиции в Telegram, поэтому оно должно быть "
+        "коротким — 1-3 предложения по существу, без вступлений. Для форматирования "
         "используй **двойные звёздочки** для акцентов и `одинарные обратные кавычки` "
         "для нотации ходов (например, `Qxf6`) — это конвертируется в HTML на нашей "
         "стороне. Не используй заголовки, таблицы или другую разметку. Верни ровно "
-        "один объект на каждый момент из списка выше, в том же порядке."
+        "один объект на каждый момент из списка выше, в том же порядке — в поле "
+        '"moments".\n\n'
+        f"ЗАДАЧА 2 — точность партии по движку: {accuracy_pct:.1f}%. {summary_context}\n\n"
+        'Напиши короткую итоговую сводку партии в поле "summary" — тот блок, '
+        "которым заканчивается каждый разбор в примерах выше (после «По общей "
+        "оценке у тебя:»), и ничего больше: без вступления, без пересказа "
+        "отдельных ходов, без заключения после сводки. Сначала оценочная фраза "
+        f"вместе с процентом точности ({accuracy_pct:.1f}%), затем по одной "
+        "короткой строке (одно-два предложения, не абзац) на дебют, на тактику/"
+        "стратегию и на эндшпиль, опираясь на то, что реально было в партии. В "
+        "примерах выше эта сводка целиком — 3-5 коротких строк, ориентируйся на "
+        "тот же объём. Обычный текст, без разметки и без списков, в своей "
+        "обычной манере.\n\n"
+        f"Обе задачи пиши на языке: {lang_name}, сохраняя тот же стиль и манеру, "
+        "что в примерах выше, даже если примеры на другом языке."
     )
 
     response = await client.messages.create(
         model=config.CLAUDE_MODEL,
-        max_tokens=_calibrated_max_tokens(len(critical_moments)),
-        # This is formulaic style-mimicry, not a reasoning task, and the tight
+        max_tokens=_calibrated_max_tokens(len(caption_moments)) + _SUMMARY_MAX_TOKENS,
+        # Formulaic style-mimicry, not a reasoning task, and the calibrated
         # max_tokens above has no headroom for unpredictable thinking spend —
-        # disabling it keeps the budget entirely for the visible JSON output
-        # (and avoids paying for thinking tokens at all).
+        # disabling it keeps the budget entirely for the visible JSON output.
         thinking={"type": "disabled"},
         # No sampling controls on this model: claude-sonnet-5 rejects
         # temperature/top_p/top_k entirely (400 invalid_request_error) — there
         # is no server-side knob for determinism here. The empty-explanation
         # bug this used to guard against (observed in production for
         # strength-type moments) is instead addressed by the "never leave
-        # explanation empty" directive and the tightened, equally-concrete
-        # strength-move instructions above — prompt-only determinism.
+        # explanation empty" directive and the concrete, symmetric
+        # mistake/strength instructions above — prompt-only determinism.
         output_config={
             "effort": "medium",
-            "format": {"type": "json_schema", "schema": _EXPLANATIONS_SCHEMA},
+            "format": {"type": "json_schema", "schema": _REVIEW_SCHEMA},
         },
         system=build_system_prompt(),
         messages=[{"role": "user", "content": user_prompt}],
@@ -209,14 +260,17 @@ async def generate_moment_explanations(
         explanations_by_key = {
             (item["move_number"], item["side"]): item["explanation"] for item in data["moments"]
         }
+        summary = data["summary"].strip()
     except (json.JSONDecodeError, KeyError, TypeError):
         # A response cut off mid-JSON (tight max_tokens, longer-than-usual
         # explanations) shouldn't crash the whole review — fall back to the
-        # per-moment default caption in the handler instead.
+        # per-moment default caption and a skipped summary message in the
+        # handler instead.
         explanations_by_key = {}
+        summary = ""
 
     explanations = [
-        explanations_by_key.get((m.move_number, m.side), "") for m in critical_moments
+        explanations_by_key.get((m.move_number, m.side), "") for m in caption_moments
     ]
 
     usage = TokenUsage(
@@ -224,66 +278,4 @@ async def generate_moment_explanations(
         output_tokens=response.usage.output_tokens,
         cached_tokens=response.usage.cache_read_input_tokens,
     )
-    return explanations, usage
-
-
-# The corpus's own closing blocks are short — measured at 145-180 characters
-# total across all 8 examples (one evaluative phrase + 3-4 one-line notes).
-# 500 was already generous for that content alone, yet real runs were
-# truncating mid-sentence — the likely cause is the same one already
-# documented on generate_moment_explanations' call above: without
-# `thinking` explicitly disabled, this call had no headroom carved out for
-# it and no guarantee thinking tokens wouldn't eat into the 500-token
-# budget before any visible text got written. Fixed by disabling thinking
-# here too, plus a bump for margin and a tighter prompt (see below) so the
-# model doesn't try to restate the whole game instead of just the closing
-# block.
-_SUMMARY_MAX_TOKENS = 700
-
-
-async def generate_game_summary(
-    critical_moments: list[CriticalMoment], accuracy_pct: float, language: str
-) -> tuple[str, TokenUsage]:
-    """Returns the short end-of-game summary described by the corpus — an
-    evaluative phrase with the accuracy percentage, plus one line each on
-    the opening, tactics/strategy, and the endgame — as a single
-    Telegram-ready plain-text message.
-    """
-    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
-
-    user_prompt = (
-        f"Точность партии по движку: {accuracy_pct:.1f}%.\n\n"
-        "Отмеченные моменты партии для контекста (они уже прокомментированы "
-        f"отдельно, не нужно пересказывать каждый):\n\n{_format_moments(critical_moments)}\n\n"
-        "Напиши ТОЛЬКО короткую итоговую сводку партии — тот блок, которым "
-        "заканчивается каждый разбор в примерах выше (после «По общей оценке "
-        "у тебя:»), и ничего больше: без вступления, без пересказа отдельных "
-        "ходов, без заключения после сводки. Сначала оценочная фраза вместе "
-        f"с процентом точности ({accuracy_pct:.1f}%), затем по одной короткой "
-        "строке (одно-два предложения, не абзац) на дебют, на тактику/"
-        "стратегию и на эндшпиль, опираясь на то, что реально было в партии "
-        "(моменты выше и то, в какой стадии партии они случились). В "
-        "примерах выше эта сводка целиком — 3-5 коротких строк, ориентируйся "
-        "на тот же объём. Обычный текст, без разметки и без списков, в своей "
-        f"обычной манере. Пиши на языке: {lang_name}, сохраняя тот же стиль и "
-        "манеру, что в примерах выше, даже если примеры на другом языке."
-    )
-
-    response = await client.messages.create(
-        model=config.CLAUDE_MODEL,
-        max_tokens=_SUMMARY_MAX_TOKENS,
-        # See the identical note on generate_moment_explanations above —
-        # without this, thinking tokens (if the model reaches for them)
-        # eat into max_tokens with nothing visible to show for it.
-        thinking={"type": "disabled"},
-        system=build_system_prompt(),
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-
-    summary = "".join(block.text for block in response.content if block.type == "text").strip()
-    usage = TokenUsage(
-        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
-        output_tokens=response.usage.output_tokens,
-        cached_tokens=response.usage.cache_read_input_tokens,
-    )
-    return summary, usage
+    return explanations, summary, usage

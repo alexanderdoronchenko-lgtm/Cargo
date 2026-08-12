@@ -24,7 +24,7 @@ from services.chess_service import (
     fetch_game_by_url,
     parse_pgn,
 )
-from services.commentary_service import generate_game_summary, generate_moment_explanations
+from services.commentary_service import generate_review
 from services.engine_service import EngineError, TYPE_MISTAKE, analyze_game, select_top_moments
 from services import usage_service
 from telegram_format import markdown_to_html, truncate_html
@@ -180,9 +180,13 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
 
     moments_for_captions = select_top_moments(critical_moments)
 
-    explanations_started = time.perf_counter()
-    explanations, token_usage = await generate_moment_explanations(moments_for_captions, lang)
-    claude_explanations_elapsed = time.perf_counter() - explanations_started
+    # Merged into one Claude call (explanations + summary) instead of two
+    # sequential ones — see generate_review's docstring for why.
+    claude_started = time.perf_counter()
+    explanations, summary, token_usage = await generate_review(
+        moments_for_captions, critical_moments, analysis.accuracy_pct, lang
+    )
+    claude_elapsed = time.perf_counter() - claude_started
     await database.log_token_usage(
         telegram_id, token_usage.input_tokens, token_usage.output_tokens, token_usage.cached_tokens
     )
@@ -219,34 +223,34 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
         )
 
     # Grounded in every flagged moment across the whole game, not just the
-    # subset that fit in moments_for_captions, so the summary's per-phase
-    # lines reflect the full game the accuracy number was computed from.
-    summary_started = time.perf_counter()
-    summary, summary_usage = await generate_game_summary(critical_moments, analysis.accuracy_pct, lang)
-    claude_summary_elapsed = time.perf_counter() - summary_started
-    await database.log_token_usage(
-        telegram_id, summary_usage.input_tokens, summary_usage.output_tokens, summary_usage.cached_tokens
-    )
-    # No formatting is requested from Claude here (plain text), but the
-    # message still goes out under parse_mode=HTML — escape defensively so
-    # an incidental "<", ">" or "&" in the model's prose can't be misparsed
-    # as markup and reject the send.
-    await send(message.answer(html.escape(summary)))
+    # subset that fit in moments_for_captions (generate_review sends both
+    # lists), so the summary's per-phase lines reflect the full game the
+    # accuracy number was computed from.
+    if summary.strip():
+        # No formatting is requested from Claude here (plain text), but the
+        # message still goes out under parse_mode=HTML — escape defensively
+        # so an incidental "<", ">" or "&" in the model's prose can't be
+        # misparsed as markup and reject the send.
+        await send(message.answer(html.escape(summary)))
+    else:
+        # Same rationale as the skipped strength captions above: an empty
+        # summary carries no information, and Telegram rejects empty
+        # message text outright, so skip rather than send a blank message.
+        logger.warning(
+            "Empty game summary from Claude (telegram_id=%s) — skipping summary message", telegram_id
+        )
 
     total_elapsed = time.perf_counter() - review_started
-    claude_total = claude_explanations_elapsed + claude_summary_elapsed
     logger.info(
         "Review timing telegram_id=%s moments=%d: stockfish=%.2fs "
-        "claude_explanations=%.2fs claude_summary=%.2fs claude_total=%.2fs "
-        "telegram_sends=%.2fs other=%.2fs total=%.2fs",
+        "claude=%.2fs (merged explanations+summary) telegram_sends=%.2fs "
+        "other=%.2fs total=%.2fs",
         telegram_id,
         len(moments_for_captions),
         stockfish_elapsed,
-        claude_explanations_elapsed,
-        claude_summary_elapsed,
-        claude_total,
+        claude_elapsed,
         telegram_time,
-        total_elapsed - stockfish_elapsed - claude_total - telegram_time,
+        total_elapsed - stockfish_elapsed - claude_elapsed - telegram_time,
         total_elapsed,
     )
 

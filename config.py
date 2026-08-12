@@ -13,6 +13,12 @@ ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
+# UCI "Threads" option — lets Stockfish search a single position with
+# multiple threads instead of one, cutting per-ply analysis time on
+# multi-core servers. 4 is a conservative default; raise it via env var up
+# to the server's core count (leave at least one core free for the bot
+# process itself and concurrent requests).
+STOCKFISH_THREADS = int(os.getenv("STOCKFISH_THREADS", "4"))
 
 # Subscription prices in Telegram Stars (XTR), per month.
 RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "600"))
