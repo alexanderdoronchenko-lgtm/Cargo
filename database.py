@@ -333,6 +333,19 @@ async def count_usage_last_24h(telegram_id: int, action_type: str) -> int:
         return row[0]
 
 
+async def count_usage_total(telegram_id: int, action_type: str) -> int:
+    """All-time count, no time window — used for the free tier's one-time
+    lifetime trial (see usage_service.get_remaining_analyses).
+    """
+    async with aiosqlite.connect(config.DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM usage WHERE telegram_id = ? AND action_type = ?",
+            (telegram_id, action_type),
+        )
+        row = await cursor.fetchone()
+        return row[0]
+
+
 async def get_critical_moments_since(
     telegram_id: int, action_type: str, days: int, limit: int = 150
 ) -> list[aiosqlite.Row]:

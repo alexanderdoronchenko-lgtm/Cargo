@@ -1,6 +1,6 @@
 {
   "start_greeting": "Hi! I'm a chess game analysis bot.\n\nSend me a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org — I'll parse the moves.\n\nSee /help for the full list of commands.",
-  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n/balance — today's remaining game analyses\n/subscribe — subscribe or upgrade your plan\n/progress — recurring weaknesses over the last 30 days\n/puzzles — open the mini app with puzzles and the opening trainer\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
+  "help_text": "Available commands:\n/start — greeting and a short description of the bot\n/help — this list of commands\n/language — choose the interface language\n/balance — your remaining game analyses\n/subscribe — subscribe or upgrade your plan\n/progress — recurring weaknesses over the last 30 days\n/puzzles — open the mini app with puzzles and the opening trainer\n\nYou can also just send a PGN file, a game in PGN text, or a link to a game on chess.com / lichess.org.",
   "language_prompt": "Choose your interface language:",
   "language_changed": "Language switched to English.",
   "game_received": "Game received, moves: {count}",
@@ -17,7 +17,9 @@
   "moment_fallback_caption": "Move {move_number}: `{move_san}` (loss {cp_loss} cp).",
   "moment_fallback_caption_strength": "Move {move_number}: `{move_san}` — a strong move.",
   "limit_exceeded": "You've reached today's game analysis limit ({limit} per day). Subscribe or upgrade your plan — /subscribe.",
+  "limit_exceeded_free": "You've already used your one-time free game analysis. Subscribe to keep analyzing games — /subscribe.",
   "balance_status": "Game analyses left today: {remaining} of {limit}.\nCurrent plan: {tier}.",
+  "balance_status_free": "Free game analysis: {remaining} of {limit} (one-time, doesn't refresh).\nCurrent plan: {tier}.",
   "tier_free": "Free",
   "tier_ruby": "Ruby",
   "tier_emerald": "Emerald",

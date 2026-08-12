@@ -29,9 +29,21 @@ async def cmd_balance(message: Message) -> None:
 
     tier = await database.get_user_tier(telegram_id)
     remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
-    limit = usage_service.daily_limit(tier)
     tier_name = t(_TIER_NAME_KEYS.get(tier, "tier_free"), lang)
 
+    if tier == usage_service.TIER_FREE:
+        await message.answer(
+            t(
+                "balance_status_free",
+                lang,
+                remaining=remaining,
+                limit=usage_service.FREE_LIFETIME_LIMIT,
+                tier=tier_name,
+            )
+        )
+        return
+
+    limit = usage_service.daily_limit(tier)
     await message.answer(
         t("balance_status", lang, remaining=remaining, limit=limit, tier=tier_name)
     )
