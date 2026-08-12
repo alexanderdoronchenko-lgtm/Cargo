@@ -60,6 +60,64 @@ def build_system_prompt() -> list[dict]:
     ]
 
 
+def _explanation_task_instructions(lang_name: str) -> str:
+    # Fixed across every per-moment call within a review (only the moment
+    # data in the user message varies) — lives in the *system* prompt
+    # precisely so it's cached once and read N times, not resent in full on
+    # every one of the N concurrent calls. Moving this ~800-token block out
+    # of `messages` was the actual fix for the non-cached-token blowup:
+    # duplicated across 10-13 calls, it was ~9000 of the ~9239 tokens
+    # originally measured — far more than any cache-write race ever cost.
+    return (
+        "Для КАЖДОГО момента, описанного в пользовательском сообщении, "
+        "напиши отдельное объяснение в своей манере — живой комментарий "
+        "тренера, а не механический вердикт «ошибка/не ошибка», и НИКОГДА не "
+        "оставляй объяснение пустым — оно должно быть содержательным, без "
+        "исключений. "
+        "Для ОШИБКИ: как и в примерах выше, можно сначала коротко отметить, что "
+        "было хорошо в позиции или замысле перед сбоем, прежде чем объяснить сам "
+        "промах — но объяснение должно оставаться правдивым: перед тобой реальная "
+        "ошибка, не выдумывай похвалу самому ходу. "
+        "Для СИЛЬНОГО ХОДА пиши по той же конкретной схеме, что и для ошибки: "
+        "сначала — что именно даёт этот ход (материал, позиционный перевес, атаку "
+        "на короля, инициативу), затем — почему это было не очевидно или сложно "
+        "найти (например, единственный ход, спасающий партию, тихий манёвр без "
+        "размена, который легко пропустить, или точный расчёт варианта). Не "
+        "ограничивайся общими словами вроде «отличный ход» — назови конкретный "
+        "эффект хода, так же предметно, как объясняешь ошибки. Это будет подпись "
+        "под картинкой позиции в Telegram, поэтому объяснение должно быть "
+        "коротким — 1-3 предложения по существу, без вступлений. "
+        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру объяснения, что "
+        "в примерах выше, даже если примеры на другом языке. Для форматирования "
+        "используй **двойные звёздочки** для акцентов и `одинарные обратные кавычки` "
+        "для нотации ходов (например, `Qxf6`) — это конвертируется в HTML на нашей "
+        "стороне. Не используй заголовки, таблицы или другую разметку. Верни ТОЛЬКО "
+        "само объяснение — без вступлений, без повторения хода, без кавычек вокруг "
+        "текста."
+    )
+
+
+def build_explanation_system_prompt(language: str) -> list[dict]:
+    """Same role/style/corpus as build_system_prompt, plus the fixed
+    per-moment task instructions — cache_control moves to this last block,
+    which caches the whole prefix (role+style+corpus+instructions) as one
+    unit. Language-specific (two cache entries, "ru" and "en"), which is
+    fine: every call within one review shares the same language, so all N
+    concurrent explanation calls in a review still hit the same entry.
+    """
+    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+    return [
+        {"type": "text", "text": _ROLE_PROMPT},
+        {"type": "text", "text": _STYLE_INSTRUCTIONS},
+        {"type": "text", "text": _load_style_corpus()},
+        {
+            "type": "text",
+            "text": _explanation_task_instructions(lang_name),
+            "cache_control": {"type": "ephemeral", "ttl": "1h"},
+        },
+    ]
+
+
 def _format_moments(moments: list[CriticalMoment]) -> str:
     if not moments:
         return "Отмеченных моментов в партии не найдено."
@@ -108,21 +166,27 @@ _EXPLANATION_MAX_TOKENS = 250
 _SUMMARY_MAX_TOKENS = 700
 
 
-async def _warm_prompt_cache(semaphore: asyncio.Semaphore) -> TokenUsage:
-    """Writes the system prompt's cache entry with a single throwaway call
-    *before* the real fan-out in generate_review, so every one of the N
-    concurrent calls below reads an already-warm cache instead of racing to
-    write it themselves.
+async def _warm_prompt_cache(language: str, semaphore: asyncio.Semaphore) -> TokenUsage:
+    """Writes the explanation system prompt's cache entry with a single
+    throwaway call *before* the real fan-out in generate_review, so every
+    one of the N concurrent explanation calls below reads an already-warm
+    cache instead of racing to write it themselves.
 
     A cache entry only becomes readable once some request has finished
     writing it — firing N calls with an identical system prompt at the same
     instant (as generate_review's asyncio.gather does) means several of
-    them start before any entry exists, so each pays full (cache-creation)
-    price for the ~3800-token corpus independently. Confirmed in
-    production: 9239 non-cached input tokens across one 10-call batch is
-    almost exactly 2-3 redundant writes of that corpus (3778 tokens each),
-    not per-call game context — each call's own user content is already
-    just one moment's data (~60-100 tokens), not the whole game.
+    them could start before any entry exists, each paying full
+    (cache-creation) price for the ~4600-token role+style+corpus+
+    instructions block independently. This guarantees exactly one write
+    instead of a possible 2-3.
+
+    Note this is a secondary saving next to the real fix: the dominant cost
+    (measured at ~9000 of ~9239 non-cached tokens in production) was the
+    ~800-token task-instructions block being resent in full on every one of
+    the N *messages* (never cacheable there, regardless of this function) —
+    now moved into build_explanation_system_prompt's cached system prompt
+    instead. This warm-up only helps with the much smaller remaining
+    cache-write race on that system prompt itself.
 
     max_tokens=0 returns as soon as the cache write completes with zero
     output tokens billed — cheaper and faster than waiting on a real call
@@ -134,7 +198,7 @@ async def _warm_prompt_cache(semaphore: asyncio.Semaphore) -> TokenUsage:
                 model=config.CLAUDE_MODEL,
                 max_tokens=0,
                 thinking={"type": "disabled"},
-                system=build_system_prompt(),
+                system=build_explanation_system_prompt(language),
                 messages=[{"role": "user", "content": "warmup"}],
             )
     except Exception:
@@ -158,38 +222,20 @@ async def _generate_moment_explanation(
     individual call instead of the sum of all of them, at the cost of
     firing more requests (bounded by `semaphore` against Anthropic rate
     limits).
-    """
-    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
 
+    The user message below carries only this one moment's data — the task
+    instructions (formatting rules, mistake/strength templates, language)
+    live in build_explanation_system_prompt's *system* prompt instead, so
+    they're cached once per review and read by every other call in the
+    same batch, rather than resent in full N times.
+    """
     user_prompt = (
         "Вот отмеченный момент партии — указан его тип: ОШИБКА (потеря в "
         "оценке по движку больше 100 сантипешек) или СИЛЬНЫЙ ХОД (совпадение "
         "с лучшим ходом движка в непростой позиции, либо заметный прирост "
         f"оценки без простого взятия материала):\n\n{_format_moments([moment])}\n\n"
-        "Напиши отдельное объяснение в своей манере — живой комментарий "
-        "тренера, а не механический вердикт «ошибка/не ошибка», и НИКОГДА не "
-        "оставляй объяснение пустым — оно должно быть содержательным, без "
-        "исключений. "
-        "Для ОШИБКИ: как и в примерах выше, можно сначала коротко отметить, что "
-        "было хорошо в позиции или замысле перед сбоем, прежде чем объяснить сам "
-        "промах — но объяснение должно оставаться правдивым: перед тобой реальная "
-        "ошибка, не выдумывай похвалу самому ходу. "
-        "Для СИЛЬНОГО ХОДА пиши по той же конкретной схеме, что и для ошибки: "
-        "сначала — что именно даёт этот ход (материал, позиционный перевес, атаку "
-        "на короля, инициативу), затем — почему это было не очевидно или сложно "
-        "найти (например, единственный ход, спасающий партию, тихий манёвр без "
-        "размена, который легко пропустить, или точный расчёт варианта). Не "
-        "ограничивайся общими словами вроде «отличный ход» — назови конкретный "
-        "эффект хода, так же предметно, как объясняешь ошибки. Это будет подпись "
-        "под картинкой позиции в Telegram, поэтому объяснение должно быть "
-        "коротким — 1-3 предложения по существу, без вступлений. "
-        f"Пиши на языке: {lang_name}, сохраняя тот же стиль и манеру объяснения, что "
-        "в примерах выше, даже если примеры на другом языке. Для форматирования "
-        "используй **двойные звёздочки** для акцентов и `одинарные обратные кавычки` "
-        "для нотации ходов (например, `Qxf6`) — это конвертируется в HTML на нашей "
-        "стороне. Не используй заголовки, таблицы или другую разметку. Верни ТОЛЬКО "
-        "само объяснение — без вступлений, без повторения хода, без кавычек вокруг "
-        "текста."
+        "Напиши объяснение для этого момента по инструкциям из системного "
+        "промпта."
     )
 
     async with semaphore:
@@ -204,8 +250,9 @@ async def _generate_moment_explanation(
             # there is no server-side knob for determinism here. The
             # empty-explanation bug this used to guard against is instead
             # addressed by the "never leave explanation empty" directive and
-            # the concrete mistake/strength instructions above.
-            system=build_system_prompt(),
+            # the concrete mistake/strength instructions in the system
+            # prompt above.
+            system=build_explanation_system_prompt(language),
             messages=[{"role": "user", "content": user_prompt}],
         )
 
@@ -295,18 +342,21 @@ async def generate_review(
     skipped summary message).
 
     Runs a cache-warming call first (see _warm_prompt_cache) so the N
-    concurrent calls below all read a warm system-prompt cache instead of
-    racing to write it — without this, several of them miss the cache
-    simultaneously and each pays full price for the ~3800-token corpus
-    independently (confirmed in production: 9239 non-cached input tokens on
-    one 10-call batch, consistent with 2-3 redundant writes).
+    concurrent explanation calls below all read a warm system-prompt cache
+    instead of racing to write it. This is a secondary saving, though — the
+    task instructions that used to be resent in full on every one of the N
+    *messages* (the actual dominant cost, ~9000 of ~9239 non-cached tokens
+    measured in production before this) now live in
+    build_explanation_system_prompt's cached system prompt instead, which
+    is what actually fixed the blowup; the warm-up only guards the smaller
+    remaining cache-write race on that system prompt.
     """
     if not caption_moments:
         return [], "", TokenUsage(0, 0, 0)
 
     semaphore = _claude_semaphore
 
-    total_usage = await _warm_prompt_cache(semaphore)
+    total_usage = await _warm_prompt_cache(language, semaphore)
 
     explanation_tasks = [
         _generate_moment_explanation(moment, language, semaphore) for moment in caption_moments
