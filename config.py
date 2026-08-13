@@ -23,6 +23,24 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # https://ai.google.dev/gemini-api/docs/models if this 404s again; Google
 # has been cycling Flash generations roughly every few months.
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+
+# A review now fires several parallel Gemini calls (batched explanations +
+# a summary call — see services/commentary_service.py's Gemini path)
+# instead of one, across potentially several simultaneous users' reviews.
+# These two together protect the API key's limits — see
+# services/commentary_service.py's _RateLimiter docstring for why a
+# concurrency cap alone doesn't bound requests/minute.
+#
+# GEMINI_MAX_CONCURRENT_REQUESTS: how many Gemini calls may be in flight
+# at once, process-wide. 12 leaves headroom for 2-3 users' reviews to run
+# concurrently (each peaking at 4-5 in-flight calls) rather than
+# serializing to one review at a time.
+GEMINI_MAX_CONCURRENT_REQUESTS = int(os.getenv("GEMINI_MAX_CONCURRENT_REQUESTS", "12"))
+# GEMINI_MAX_REQUESTS_PER_MINUTE: matches the Google AI Studio free tier's
+# 15 RPM quota, with 1 request of headroom — raise this if the key is on a
+# paid tier with a higher quota.
+GEMINI_MAX_REQUESTS_PER_MINUTE = int(os.getenv("GEMINI_MAX_REQUESTS_PER_MINUTE", "14"))
+
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 # UCI "Threads" option — lets Stockfish search a single position with

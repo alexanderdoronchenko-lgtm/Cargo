@@ -24,6 +24,7 @@
   "analyzing": "Analyzing the game with the engine, this may take a moment...",
   "engine_error": "Couldn't analyze the game with the engine. Please try again later.",
   "no_critical_moments": "No critical mistakes (loss over 100 centipawns) found — the game was played evenly.",
+  "review_queue_notice": "There's a lot of concurrent activity right now, so your review got queued — it'll take a bit longer, but it will still arrive.",
   "moment_fallback_caption": "Move {move_number}: `{move_san}` (loss {cp_loss} cp).",
   "limit_exceeded": "You've reached today's game analysis limit ({limit} per day). Subscribe or upgrade your plan — /subscribe.",
   "limit_exceeded_free": "You've already used your one-time free game analysis. Subscribe to keep analyzing games — /subscribe.",

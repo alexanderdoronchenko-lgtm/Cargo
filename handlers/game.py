@@ -184,13 +184,28 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
 
     moments_for_captions = select_top_moments(critical_moments)
 
-    # One Claude call per caption moment plus one summary call, fired
-    # concurrently (bounded by a global semaphore) — see generate_review's
+    # Notifies the user once if this review's Gemini calls end up queued
+    # behind the process-global rate/concurrency limit for more than
+    # generate_review's _QUEUE_NOTICE_AFTER_SECONDS (no-op on the Claude
+    # path, which doesn't call this). Guarded so a review whose several
+    # concurrent batches all queue at once still only sends one message.
+    queue_notice_sent = False
+
+    async def notify_queued() -> None:
+        nonlocal queue_notice_sent
+        if queue_notice_sent:
+            return
+        queue_notice_sent = True
+        await send(message.answer(t("review_queue_notice", lang)))
+
+    # One Claude call per caption moment plus one summary call, or several
+    # small Gemini batches plus a summary call — fired concurrently
+    # (bounded by a global semaphore/rate limiter) — see generate_review's
     # docstring for why, and for the ceil(N / limit) round-based timing this
     # actually produces.
     claude_started = time.perf_counter()
     explanations, summary, token_usage = await generate_review(
-        moments_for_captions, critical_moments, analysis.accuracy_pct, lang, tier
+        moments_for_captions, critical_moments, analysis.accuracy_pct, lang, tier, notify_queued
     )
     claude_elapsed = time.perf_counter() - claude_started
     model = model_for_tier(tier)
