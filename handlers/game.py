@@ -24,7 +24,7 @@ from services.chess_service import (
     fetch_game_by_url,
     parse_pgn,
 )
-from services.commentary_service import generate_review, model_for_tier
+from services.commentary_service import calls_for_review, generate_review, model_for_tier
 from services.engine_service import EngineError, TYPE_MISTAKE, analyze_game, select_top_moments
 from services import usage_service
 from telegram_format import markdown_to_html, truncate_html
@@ -268,12 +268,15 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     # can legitimately exceed input_tokens here (most calls cheaply read a
     # cache that only one call had to pay to write), so they're logged as
     # separate totals rather than a "part/whole" ratio that would look wrong.
-    # claude_calls is a fixed N+1 (Diamond's per-moment + summary calls)
-    # only on the Claude path; on the Gemini path it's always 1 (single
-    # batched call) regardless of moment count — model= disambiguates which
-    # shape a given line is, and for Gemini, claude_elapsed below is that
-    # one batched call's real wall time.
-    claude_calls = len(moments_for_captions) + 1 if model == config.CLAUDE_MODEL else 1
+    # claude_calls is N+1 on the Claude path (per-moment + summary calls)
+    # and ceil(N/_GEMINI_BATCH_SIZE)+1 on the Gemini path (batches +
+    # summary) — computed by commentary_service so this can't drift from
+    # the real batching logic the way a hardcoded "always 1 on Gemini"
+    # here once did (that was correct back when Gemini fired a single
+    # batched call for the whole review, and silently went stale once
+    # generate_review started splitting Gemini reviews into several
+    # parallel batches).
+    claude_calls = calls_for_review(tier, len(moments_for_captions))
     logger.info(
         "Review timing telegram_id=%s tier=%s model=%s moments=%d claude_calls=%d: "
         "stockfish=%.2fs claude=%.2fs (output_tokens=%d "

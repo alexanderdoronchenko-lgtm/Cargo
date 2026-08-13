@@ -805,6 +805,26 @@ def model_for_tier(tier: str) -> str:
     return config.GEMINI_MODEL
 
 
+def calls_for_review(tier: str, moment_count: int) -> int:
+    """How many API calls generate_review will actually make for a review
+    with `moment_count` caption moments, on `tier`'s provider — for
+    logging only, kept here rather than duplicated at the call site so it
+    can't drift from the real batching logic above (_GEMINI_BATCH_SIZE is
+    an implementation detail of this module, not something callers should
+    need to know).
+
+    Claude: one call per moment plus one summary call (_generate_review_
+    claude). Gemini: ceil(moment_count / _GEMINI_BATCH_SIZE) batch calls
+    plus one summary call (_generate_review_gemini/_chunk_moments) — e.g.
+    10 moments is ceil(10/3) + 1 = 5, not 1.
+    """
+    if moment_count == 0:
+        return 0
+    if _TIER_PROVIDER.get(tier, "gemini") == "claude":
+        return moment_count + 1
+    return math.ceil(moment_count / _GEMINI_BATCH_SIZE) + 1
+
+
 async def generate_review(
     caption_moments: list[CriticalMoment],
     all_moments: list[CriticalMoment],
