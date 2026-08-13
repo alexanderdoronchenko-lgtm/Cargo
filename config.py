@@ -17,7 +17,12 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 # Diamond stays on Claude. Get a key at https://aistudio.google.com/apikey
 # (free Google account, no billing setup needed for the free tier itself).
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# gemini-2.5-flash was retired for new API keys ("no longer available to
+# new users" 404) — gemini-3.6-flash is the current GA Flash model as of
+# August 2026 (launched 2026-07-21). Re-check
+# https://ai.google.dev/gemini-api/docs/models if this 404s again; Google
+# has been cycling Flash generations roughly every few months.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 # UCI "Threads" option — lets Stockfish search a single position with
