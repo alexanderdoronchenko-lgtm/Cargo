@@ -193,6 +193,7 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
         moments_for_captions, critical_moments, analysis.accuracy_pct, lang, tier
     )
     claude_elapsed = time.perf_counter() - claude_started
+    model = model_for_tier(tier)
     await database.log_token_usage(
         telegram_id, token_usage.input_tokens, token_usage.output_tokens, token_usage.cached_tokens
     )
@@ -243,7 +244,7 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
         # summary carries no information, and Telegram rejects empty
         # message text outright, so skip rather than send a blank message.
         logger.warning(
-            "Empty game summary from Claude (telegram_id=%s) — skipping summary message", telegram_id
+            "Empty game summary from %s (telegram_id=%s) — skipping summary message", model, telegram_id
         )
 
     total_elapsed = time.perf_counter() - review_started
@@ -257,7 +258,6 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     # batched call) regardless of moment count — model= disambiguates which
     # shape a given line is, and for Gemini, claude_elapsed below is that
     # one batched call's real wall time.
-    model = model_for_tier(tier)
     claude_calls = len(moments_for_captions) + 1 if model == config.CLAUDE_MODEL else 1
     logger.info(
         "Review timing telegram_id=%s tier=%s model=%s moments=%d claude_calls=%d: "

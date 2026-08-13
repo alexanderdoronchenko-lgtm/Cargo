@@ -16,6 +16,7 @@ the Claude path uses).
 import asyncio
 import functools
 import json
+import logging
 from dataclasses import dataclass
 
 from google.genai import types as genai_types
@@ -24,6 +25,8 @@ import config
 from services.claude_service import client
 from services.engine_service import TYPE_STRENGTH, CriticalMoment
 from services.gemini_service import client as gemini_client
+
+logger = logging.getLogger(__name__)
 
 _CORPUS_PATH = config.BASE_DIR / "chess_style_corpus.md"
 
@@ -563,6 +566,19 @@ async def _generate_review_gemini(
             ),
         )
     except Exception:
+        # Best-effort like _warm_prompt_cache, but this failure is the
+        # *whole* review's commentary, not one call among many — silently
+        # returning empty here made a real API error (bad key, unknown
+        # model name, rejected schema, rate limit, ...) indistinguishable
+        # from a merely-empty response in the logs. logger.exception
+        # captures the real exception + traceback, and for the SDK's own
+        # APIError subclasses that already includes the HTTP status code
+        # and response body in str(exc).
+        logger.exception(
+            "Gemini review call failed (model=%s, moments=%d) — falling back to empty explanations/summary",
+            config.GEMINI_MODEL,
+            len(caption_moments),
+        )
         return [], "", TokenUsage(0, 0, 0)
 
     try:
@@ -572,6 +588,11 @@ async def _generate_review_gemini(
         }
         summary = data["summary"].strip()
     except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        logger.warning(
+            "Gemini review response didn't match the expected schema (model=%s): %.500r",
+            config.GEMINI_MODEL,
+            response.text,
+        )
         explanations_by_key = {}
         summary = ""
 
