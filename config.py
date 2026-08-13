@@ -46,6 +46,18 @@ GEMINI_MAX_CONCURRENT_REQUESTS = int(os.getenv("GEMINI_MAX_CONCURRENT_REQUESTS",
 # paid tier with a higher quota.
 GEMINI_MAX_REQUESTS_PER_MINUTE = int(os.getenv("GEMINI_MAX_REQUESTS_PER_MINUTE", "14"))
 
+# The google-genai SDK applies NO request timeout at all when this isn't
+# set (confirmed: HttpOptions.timeout defaults to None, which becomes
+# aiohttp.ClientTimeout(total=None) — genuinely unbounded, not just "a
+# generous default"). Combined with attempts=1 (see gemini_service.py, no
+# SDK-level retries), a single slow response — confirmed in production
+# during a billing-tier transition, where Google itself warns of up to
+# 24h propagation delay — can stall a whole review for minutes with
+# nothing to time it out. 30s is generous for a real (if slow) response
+# while still bounding the worst case; real successful calls have been
+# measured at a few seconds.
+GEMINI_REQUEST_TIMEOUT_SECONDS = int(os.getenv("GEMINI_REQUEST_TIMEOUT_SECONDS", "30"))
+
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 # UCI "Threads" option — lets Stockfish search a single position with

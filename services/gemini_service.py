@@ -19,7 +19,18 @@ import config
 # giving up and falling back. attempts=1 disables SDK-level retries
 # entirely so a failure surfaces immediately to this project's own
 # handling instead of retrying blind.
+# With no timeout set, the SDK applies none at all (HttpOptions.timeout
+# defaults to None, which becomes aiohttp.ClientTimeout(total=None) —
+# genuinely unbounded) — combined with attempts=1 above, a single slow
+# response has nothing to time it out and can stall a whole review for
+# minutes. Confirmed in production during a billing-tier transition
+# (Google warns these can take up to 24h to fully propagate): non-cached
+# input/output tokens came back real and non-zero (the call succeeded),
+# it just took minutes to respond. See config.GEMINI_REQUEST_TIMEOUT_SECONDS.
 client = genai.Client(
     api_key=config.GEMINI_API_KEY,
-    http_options=types.HttpOptions(retry_options=types.HttpRetryOptions(attempts=1)),
+    http_options=types.HttpOptions(
+        retry_options=types.HttpRetryOptions(attempts=1),
+        timeout=config.GEMINI_REQUEST_TIMEOUT_SECONDS * 1000,
+    ),
 )
