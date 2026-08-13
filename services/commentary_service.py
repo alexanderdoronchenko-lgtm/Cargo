@@ -670,48 +670,119 @@ def _log_gemini_call_failure(exc: Exception, what: str, **context) -> None:
     )
 
 
-async def _warm_gemini_cache(
-    language: str, on_queued: Callable[[], Awaitable[None]] | None
-) -> TokenUsage:
-    """Writes the batch system prompt's implicit-cache entry with a single
-    throwaway call *before* the real batch fan-out in _generate_review_
-    gemini, mirroring Claude's _warm_prompt_cache — same root cause: N
-    calls sharing an identical prefix, fired together via asyncio.gather,
-    can all start before any of them has finished writing a cache entry,
-    so none of them reads one. Measured in production: a 10-moment review
-    (5 calls, all racing) landed 0 cached_input_tokens and paid full price
-    for the shared system prompt 5 times over.
+# Explicit (not implicit) caching. Google's own docs are explicit that
+# implicit caching has "no cost saving guarantee" — a hit depends on
+# whether background infrastructure happens to already be holding a
+# matching entry when a request lands, which is entirely outside this
+# process's control. Production confirmed this the hard way: even a
+# dedicated warm-up call, awaited to completion strictly *before* the
+# batch fan-out started, still measured 0 cached_input_tokens — proof
+# that our own call ordering can't influence server-side cache
+# population/routing timing at all. Explicit caching is the one mechanism
+# Google actually documents a *guaranteed* 90% discount for: create a
+# named CachedContent resource once, then every call that references it
+# via cached_content= gets the discount deterministically, not
+# opportunistically.
+@dataclass
+class _GeminiCacheEntry:
+    name: str
+    good_until: float  # time.monotonic() deadline
 
-    Unlike Claude, Gemini doesn't charge extra to *write* an implicit
-    cache entry — a miss here just costs the normal per-token price
-    rather than Claude's 2x cache-creation surcharge, so this is pure
-    upside with no penalty if it doesn't help. It also isn't a guarantee:
-    Gemini's own implicit-caching hit rate is documented as inconsistent
-    even when a prior call already wrote a matching entry, so expect this
-    to raise the cache-hit rate, not make it 100%.
 
-    max_output_tokens=1 keeps the throwaway call's own cost negligible —
-    the prefill (which is what actually writes the cache) happens
-    regardless of how little is generated after it.
+# Mirrors the Claude path's 1h ephemeral cache_control TTL — shared across
+# every review this process runs (not recreated per review), keyed by
+# (kind, language) since the batch and summary calls use different system
+# prompts (batch includes the per-moment task instructions, summary
+# doesn't — see _gemini_batch_system_instruction vs _gemini_system_
+# instruction) and each language needs its own cache entry.
+_GEMINI_CACHE_TTL_SECONDS = 3600
+# Recreate a bit before the real server-side expiry rather than racing it.
+_GEMINI_CACHE_REFRESH_MARGIN_SECONDS = 120
+
+_gemini_cache_entries: dict[tuple[str, str], _GeminiCacheEntry] = {}
+_gemini_cache_locks: dict[tuple[str, str], asyncio.Lock] = collections.defaultdict(asyncio.Lock)
+
+
+async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -> str | None:
+    """Returns a cached_content resource name for (kind, language),
+    creating (or refreshing, once expired) it as needed. Returns None
+    (never raises) on failure — callers fall back to sending
+    system_instruction directly for that one call, same best-effort
+    spirit as the rest of this module's Gemini calls.
+
+    The per-key lock means that when several batches race to use a cache
+    that doesn't exist yet, exactly one of them creates it (one extra
+    billed call, amortized across every review for the next hour — not
+    paid fresh per review) while the rest wait on the lock and then reuse
+    it, rather than each independently creating a redundant cache.
     """
-    try:
-        async with _gemini_slot(on_queued):
-            response = await gemini_client.aio.models.generate_content(
+    key = (kind, language)
+    now = time.monotonic()
+    entry = _gemini_cache_entries.get(key)
+    if entry is not None and entry.good_until > now:
+        return entry.name
+
+    async with _gemini_cache_locks[key]:
+        # Re-check: another coroutine may have created/refreshed this
+        # while we were waiting on the lock.
+        entry = _gemini_cache_entries.get(key)
+        now = time.monotonic()
+        if entry is not None and entry.good_until > now:
+            return entry.name
+
+        try:
+            cache = await gemini_client.aio.caches.create(
                 model=config.GEMINI_MODEL,
-                contents="warmup",
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=_gemini_batch_system_instruction(language),
-                    max_output_tokens=1,
-                    thinking_config=genai_types.ThinkingConfig(
-                        thinking_level=genai_types.ThinkingLevel.MINIMAL
-                    ),
+                config=genai_types.CreateCachedContentConfig(
+                    system_instruction=system_instruction,
+                    ttl=f"{_GEMINI_CACHE_TTL_SECONDS}s",
                 ),
             )
-    except Exception as exc:
-        _log_gemini_call_failure(exc, "Gemini cache warm-up")
-        return TokenUsage(0, 0, 0)
+        except Exception as exc:
+            _log_gemini_call_failure(exc, "Gemini cache creation", kind=kind, language=language)
+            return None
 
-    return _usage_from_gemini_response(response)
+        _gemini_cache_entries[key] = _GeminiCacheEntry(
+            name=cache.name,
+            good_until=time.monotonic() + _GEMINI_CACHE_TTL_SECONDS - _GEMINI_CACHE_REFRESH_MARGIN_SECONDS,
+        )
+        return cache.name
+
+
+def _invalidate_gemini_cache(kind: str, language: str) -> None:
+    _gemini_cache_entries.pop((kind, language), None)
+
+
+async def _generate_content_with_cache(
+    kind: str, language: str, system_instruction: str, contents: str, **config_kwargs
+):
+    """generate_content, preferring an explicit cached_content reference
+    for (kind, language) over resending system_instruction. If no cache
+    is available, or the cached_content-based call itself fails (e.g. the
+    entry was evicted server-side between our check and use), falls back
+    to — or retries with — system_instruction sent directly, so a cache
+    hiccup costs one extra call's worth of latency/tokens rather than
+    failing the batch/summary outright.
+    """
+    cache_name = await _get_gemini_cache(kind, language, system_instruction)
+    if cache_name is not None:
+        try:
+            return await gemini_client.aio.models.generate_content(
+                model=config.GEMINI_MODEL,
+                contents=contents,
+                config=genai_types.GenerateContentConfig(cached_content=cache_name, **config_kwargs),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Gemini call with cached_content=%s failed (%s), retrying without cache", cache_name, exc
+            )
+            _invalidate_gemini_cache(kind, language)
+
+    return await gemini_client.aio.models.generate_content(
+        model=config.GEMINI_MODEL,
+        contents=contents,
+        config=genai_types.GenerateContentConfig(system_instruction=system_instruction, **config_kwargs),
+    )
 
 
 async def _generate_explanations_batch_gemini(
@@ -726,24 +797,23 @@ async def _generate_explanations_batch_gemini(
     """
     try:
         async with _gemini_slot(on_queued):
-            response = await gemini_client.aio.models.generate_content(
-                model=config.GEMINI_MODEL,
+            response = await _generate_content_with_cache(
+                kind="batch",
+                language=language,
+                system_instruction=_gemini_batch_system_instruction(language),
                 contents=_gemini_batch_user_prompt(batch),
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=_gemini_batch_system_instruction(language),
-                    max_output_tokens=_gemini_batch_calibrated_max_tokens(len(batch)),
-                    # Formulaic style-mimicry, not a reasoning task — same
-                    # rationale as thinking={"type": "disabled"} on the
-                    # Claude path. Gemini 3.x models replaced the numeric
-                    # thinking_budget with the string thinking_level enum
-                    # (minimal/low/medium/high); MINIMAL is the lowest
-                    # level 3.x exposes — there's no hard "off" anymore.
-                    thinking_config=genai_types.ThinkingConfig(
-                        thinking_level=genai_types.ThinkingLevel.MINIMAL
-                    ),
-                    response_mime_type="application/json",
-                    response_json_schema=_GEMINI_EXPLANATIONS_SCHEMA,
+                max_output_tokens=_gemini_batch_calibrated_max_tokens(len(batch)),
+                # Formulaic style-mimicry, not a reasoning task — same
+                # rationale as thinking={"type": "disabled"} on the
+                # Claude path. Gemini 3.x models replaced the numeric
+                # thinking_budget with the string thinking_level enum
+                # (minimal/low/medium/high); MINIMAL is the lowest
+                # level 3.x exposes — there's no hard "off" anymore.
+                thinking_config=genai_types.ThinkingConfig(
+                    thinking_level=genai_types.ThinkingLevel.MINIMAL
                 ),
+                response_mime_type="application/json",
+                response_json_schema=_GEMINI_EXPLANATIONS_SCHEMA,
             )
     except Exception as exc:
         _log_gemini_call_failure(exc, "Gemini explanations batch", batch_size=len(batch))
@@ -773,15 +843,14 @@ async def _generate_game_summary_gemini(
 ) -> tuple[str, TokenUsage]:
     try:
         async with _gemini_slot(on_queued):
-            response = await gemini_client.aio.models.generate_content(
-                model=config.GEMINI_MODEL,
+            response = await _generate_content_with_cache(
+                kind="summary",
+                language=language,
+                system_instruction=_gemini_system_instruction(),
                 contents=_summary_prompt(all_moments, accuracy_pct, language),
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=_gemini_system_instruction(),
-                    max_output_tokens=_GEMINI_SUMMARY_MAX_TOKENS,
-                    thinking_config=genai_types.ThinkingConfig(
-                        thinking_level=genai_types.ThinkingLevel.MINIMAL
-                    ),
+                max_output_tokens=_GEMINI_SUMMARY_MAX_TOKENS,
+                thinking_config=genai_types.ThinkingConfig(
+                    thinking_level=genai_types.ThinkingLevel.MINIMAL
                 ),
             )
     except Exception as exc:
@@ -807,32 +876,26 @@ async def _generate_review_gemini(
     1, so unbounded fan-out across simultaneous users would risk the API
     key's rate limit.
 
-    Runs a cache-warming call first (see _warm_gemini_cache) when there's
-    more than one batch, so the parallel batch calls below have a shot at
-    reading an already-written implicit-cache entry for the shared system
-    prompt instead of racing to write it themselves — without this,
-    production measured 0 cached_input_tokens across a 10-moment review's
-    5 calls (all fired via asyncio.gather at once, none could read a
-    sibling's still-in-flight write).
+    Each batch/summary call goes through an explicit cached_content
+    reference (see _generate_content_with_cache/_get_gemini_cache) rather
+    than resending system_instruction — the first call for a given (kind,
+    language) within the last hour pays to create the cache, every other
+    call anywhere in the process reuses it at a guaranteed discount, so
+    this review's own parallel batches benefit from each other exactly
+    when the cache is still being created for the very first time (the
+    per-key lock in _get_gemini_cache serializes that one creation), and
+    unconditionally benefit from any other review's cache within the hour.
     """
     if not caption_moments:
         return [], "", TokenUsage(0, 0, 0)
 
     batches = _chunk_moments(caption_moments, _GEMINI_BATCH_SIZE)
-
-    total_usage = TokenUsage(0, 0, 0)
-    if len(batches) > 1:
-        # Only worth the extra call when there's more than one batch to
-        # race against — a single batch has no sibling call that could
-        # benefit from a warm cache.
-        total_usage = await _warm_gemini_cache(language, on_queued)
-
     batch_tasks = [_generate_explanations_batch_gemini(batch, language, on_queued) for batch in batches]
     summary_task = _generate_game_summary_gemini(all_moments, accuracy_pct, language, on_queued)
 
     *batch_results, (summary, summary_usage) = await asyncio.gather(*batch_tasks, summary_task)
 
-    total_usage = total_usage + summary_usage
+    total_usage = summary_usage
     explanations_by_key: dict[tuple[int, str], str] = {}
     for batch_explanations, usage in batch_results:
         explanations_by_key.update(batch_explanations)
@@ -875,17 +938,18 @@ def calls_for_review(tier: str, moment_count: int) -> int:
 
     Claude: one call per moment plus one summary call (_generate_review_
     claude). Gemini: ceil(moment_count / _GEMINI_BATCH_SIZE) batch calls
-    plus one summary call, plus one cache warm-up call whenever there's
-    more than one batch (_generate_review_gemini/_chunk_moments/
-    _warm_gemini_cache) — e.g. 10 moments is ceil(10/3) + 1 + 1 = 6.
+    plus one summary call (_generate_review_gemini/_chunk_moments) — e.g.
+    10 moments is ceil(10/3) + 1 = 5. Doesn't count the occasional extra
+    call this process makes to (re)create an explicit cache entry (see
+    _get_gemini_cache) — that happens at most once per hour per (kind,
+    language), not per review, so it isn't part of a review's own
+    deterministic call count.
     """
     if moment_count == 0:
         return 0
     if _TIER_PROVIDER.get(tier, "gemini") == "claude":
         return moment_count + 1
-    num_batches = math.ceil(moment_count / _GEMINI_BATCH_SIZE)
-    warmup = 1 if num_batches > 1 else 0
-    return num_batches + 1 + warmup
+    return math.ceil(moment_count / _GEMINI_BATCH_SIZE) + 1
 
 
 async def generate_review(
