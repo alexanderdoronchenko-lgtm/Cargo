@@ -4,6 +4,7 @@ the game they point to.
 import asyncio
 import io
 import re
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 import aiohttp
@@ -131,7 +132,66 @@ async def _fetch_chesscom_pgn(game_type: str, game_id: str) -> str:
     return pgn
 
 
-async def fetch_game_by_url(url: str, platform: str) -> str:
+def _month_start(dt: datetime) -> datetime:
+    return dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+async def _find_chesscom_pgn_in_archive(username: str, game_id: str) -> str | None:
+    """Fallback for when the unofficial callback endpoint above fails
+    (private-looking response, TCN-only data, or it 404s/times out) but
+    the user has a chess.com username linked via /chesscom: searches
+    their official public archive (api.chess.com/pub/player/.../games/
+    {year}/{month} — the one endpoint chess.com's PubAPI actually
+    documents) for the same game and returns its real PGN.
+
+    The archive has no "fetch by id" endpoint either, only whole months,
+    so this downloads a month at a time (current, then previous, stopping
+    at the first match) and matches each archived game's own `url` field
+    against `game_id` — that field is chess.com's own link to the game, in
+    the same /game/(live|daily)/<id> shape as what users share, so this is
+    an exact id match, not a fuzzy time/participant heuristic. Returns
+    None (never raises) if nothing matches or the archive itself is
+    unreachable — this is a secondary path, not the primary one.
+    """
+    now = datetime.now(timezone.utc)
+    current_month = _month_start(now)
+    previous_month = _month_start(current_month - timedelta(days=1))
+
+    async with aiohttp.ClientSession() as session:
+        for month_start in (current_month, previous_month):
+            archive_url = (
+                f"https://api.chess.com/pub/player/{username}/games/"
+                f"{month_start.year:04d}/{month_start.month:02d}"
+            )
+            try:
+                async with session.get(
+                    archive_url,
+                    headers={"User-Agent": _USER_AGENT},
+                    timeout=_REQUEST_TIMEOUT,
+                ) as response:
+                    if response.status != 200:
+                        continue
+                    data = await response.json(content_type=None)
+            except (aiohttp.ClientError, asyncio.TimeoutError):
+                continue
+
+            games = data.get("games") if isinstance(data, dict) else None
+            if not isinstance(games, list):
+                continue
+
+            for game in games:
+                if not isinstance(game, dict):
+                    continue
+                game_url_match = _CHESSCOM_GAME_RE.search(game.get("url") or "")
+                if game_url_match and game_url_match.group(2) == game_id:
+                    pgn = game.get("pgn")
+                    if pgn:
+                        return pgn
+
+    return None
+
+
+async def fetch_game_by_url(url: str, platform: str, chesscom_username: str | None = None) -> str:
     if platform == "lichess.org":
         match = _LICHESS_GAME_ID_RE.search(url)
         if not match:
@@ -142,7 +202,19 @@ async def fetch_game_by_url(url: str, platform: str) -> str:
         match = _CHESSCOM_GAME_RE.search(url)
         if not match:
             raise InvalidLinkError()
-        return await _fetch_chesscom_pgn(match.group(1), match.group(2))
+        game_type, game_id = match.group(1), match.group(2)
+        try:
+            return await _fetch_chesscom_pgn(game_type, game_id)
+        except GameFetchError:
+            if chesscom_username:
+                pgn = await _find_chesscom_pgn_in_archive(chesscom_username, game_id)
+                if pgn:
+                    return pgn
+            # Re-raise the original failure (not_found/private/unsupported/
+            # network) rather than a generic one — it's still the more
+            # informative reason, the archive lookup was just a second
+            # chance at getting the PGN despite it.
+            raise
 
     raise InvalidLinkError()
 

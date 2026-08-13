@@ -343,8 +343,12 @@ async def handle_pgn_text(message: Message) -> None:
             await message.answer(t("link_unsupported", lang))
             return
 
+        chesscom_username = None
+        if platform == "chess.com":
+            chesscom_username, _ = await database.get_chess_usernames(message.from_user.id)
+
         try:
-            pgn_text = await fetch_game_by_url(url, platform)
+            pgn_text = await fetch_game_by_url(url, platform, chesscom_username)
         except GameFetchError as exc:
             await message.answer(t(f"game_fetch_error_{exc.reason}", lang))
             return
