@@ -1,14 +1,29 @@
 """Turns a game's critical moments into per-moment Telegram-ready explanations,
-written in the style captured by chess_style_corpus.md, via the Claude API
-(model: claude-sonnet-5).
+written in the style captured by chess_style_corpus.md.
+
+Model is chosen by subscription tier: Diamond uses Claude
+(claude-sonnet-5), fired as N concurrent per-moment calls (see
+_generate_review_claude). Free/Ruby/Emerald use Gemini
+(config.GEMINI_MODEL, default gemini-2.5-flash), fired as a single batched
+call carrying every moment plus the summary request in one prompt (see
+_generate_review_gemini) — Flash's own per-call generation is fast enough
+that paying for N concurrent requests to shrink wall time isn't worth it at
+these tiers' price point, and a single call also sidesteps paying N times
+for the shared role/style/corpus prefix (Gemini caches repeated prefixes
+automatically, so this doesn't need the manual cache_control/warm-up dance
+the Claude path uses).
 """
 import asyncio
 import functools
+import json
 from dataclasses import dataclass
+
+from google.genai import types as genai_types
 
 import config
 from services.claude_service import client
 from services.engine_service import TYPE_STRENGTH, CriticalMoment
+from services.gemini_service import client as gemini_client
 
 _CORPUS_PATH = config.BASE_DIR / "chess_style_corpus.md"
 
@@ -319,14 +334,15 @@ async def _generate_game_summary(
 _claude_semaphore = asyncio.Semaphore(config.CLAUDE_MAX_CONCURRENT_REQUESTS)
 
 
-async def generate_review(
+async def _generate_review_claude(
     caption_moments: list[CriticalMoment],
     all_moments: list[CriticalMoment],
     accuracy_pct: float,
     language: str,
 ) -> tuple[list[str], str, TokenUsage]:
-    """Returns (per-moment explanations for `caption_moments` in order, the
-    closing game summary grounded in `all_moments`, combined token usage).
+    """Diamond-tier path. Returns (per-moment explanations for
+    `caption_moments` in order, the closing game summary grounded in
+    `all_moments`, combined token usage).
 
     Fires one Claude call per caption moment plus one summary call, all
     concurrently — bounded by the module-level semaphore above against
@@ -382,3 +398,239 @@ async def generate_review(
         total_usage = total_usage + usage
 
     return explanations, summary, total_usage
+
+
+# --- Gemini path (Free/Ruby/Emerald) -----------------------------------
+#
+# One batched call instead of Claude's N-concurrent-calls design (see
+# module docstring for why). Schema-constrained JSON output keys each
+# explanation by (move_number, side) rather than relying on array order,
+# so a model that reorders or drops an item still resolves correctly
+# against `caption_moments` — same defensive match as the pre-parallel
+# Claude design this is modeled on (see git history prior to the
+# concurrent-calls refactor).
+
+_GEMINI_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "moments": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "move_number": {"type": "integer"},
+                    "side": {"type": "string", "enum": ["white", "black"]},
+                    "explanation": {"type": "string"},
+                },
+                "required": ["move_number", "side", "explanation"],
+                "additionalProperties": False,
+            },
+        },
+        "summary": {"type": "string"},
+    },
+    "required": ["moments", "summary"],
+    "additionalProperties": False,
+}
+
+# Initial estimate only, carried over from the same calibration this
+# codebase used for the pre-parallel Claude batched call (see
+# scripts/calibrate_caption_tokens.py) — Gemini's tokenizer isn't
+# identical to Claude's, so this should be recalibrated against real
+# usage_metadata once production numbers are in, same as that script does
+# for Claude.
+_GEMINI_AVG_EXPLANATION_TOKENS_WITH_HEADROOM = 120
+_GEMINI_JSON_OVERHEAD_PER_MOMENT = 30
+_GEMINI_JSON_WRAPPER_OVERHEAD = 10
+_GEMINI_MIN_EXPLANATIONS_TOKENS = 400
+_GEMINI_SUMMARY_MAX_TOKENS = 700
+
+
+def _gemini_calibrated_max_tokens(moment_count: int) -> int:
+    per_moment = _GEMINI_AVG_EXPLANATION_TOKENS_WITH_HEADROOM + _GEMINI_JSON_OVERHEAD_PER_MOMENT
+    explanations_budget = max(
+        _GEMINI_MIN_EXPLANATIONS_TOKENS, _GEMINI_JSON_WRAPPER_OVERHEAD + per_moment * moment_count
+    )
+    return explanations_budget + _GEMINI_SUMMARY_MAX_TOKENS
+
+
+def _gemini_system_instruction() -> str:
+    # Same role/style/corpus text as build_system_prompt, just concatenated
+    # into one string — Gemini's system_instruction isn't a list of
+    # cache_control-tagged blocks like Claude's, since prefix caching here
+    # is automatic rather than something this code has to request.
+    return "\n\n".join([_ROLE_PROMPT, _STYLE_INSTRUCTIONS, _load_style_corpus()])
+
+
+def _gemini_user_prompt(
+    caption_moments: list[CriticalMoment],
+    all_moments: list[CriticalMoment],
+    accuracy_pct: float,
+    language: str,
+) -> str:
+    lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
+
+    if len(all_moments) == len(caption_moments):
+        summary_context = "Для итоговой сводки опирайся на тот же список моментов, что и выше."
+    else:
+        # all_moments is the full, uncapped list of flagged moments (before
+        # select_top_moments trims it to the handful that get individual
+        # captions) — the summary should still be grounded in everything
+        # that happened, not just the subset shown as photo cards.
+        summary_context = (
+            "Для итоговой сводки, в отличие от индивидуальных объяснений выше, "
+            "опирайся на ПОЛНЫЙ список отмеченных моментов партии (включая те, "
+            f"что не вошли в список для отдельных объяснений):\n\n{_format_moments(all_moments)}"
+        )
+
+    return (
+        "Вот отмеченные моменты партии, по порядку — у каждого указан тип: "
+        "ОШИБКА (потеря в оценке по движку больше 100 сантипешек) или СИЛЬНЫЙ ХОД "
+        "(совпадение с лучшим ходом движка в непростой позиции, либо заметный "
+        f"прирост оценки без простого взятия материала):\n\n{_format_moments(caption_moments)}\n\n"
+        "ЗАДАЧА 1 — для КАЖДОГО момента из списка выше напиши отдельное "
+        "объяснение в своей манере — живой комментарий тренера, а не "
+        "механический вердикт «ошибка/не ошибка», и НИКОГДА не оставляй "
+        "объяснение пустым — у каждого момента должно быть содержательное "
+        "объяснение, без исключений. "
+        "Для ОШИБОК: как и в примерах выше, можно сначала коротко отметить, что "
+        "было хорошо в позиции или замысле перед сбоем, прежде чем объяснить сам "
+        "промах — но объяснение должно оставаться правдивым: перед тобой реальная "
+        "ошибка, не выдумывай похвалу самому ходу. "
+        "Для СИЛЬНЫХ ХОДОВ пиши по той же конкретной схеме, что и для ошибок: "
+        "сначала — что именно даёт этот ход (материал, позиционный перевес, атаку "
+        "на короля, инициативу), затем — почему это было не очевидно или сложно "
+        "найти (например, единственный ход, спасающий партию, тихий манёвр без "
+        "размена, который легко пропустить, или точный расчёт варианта). Не "
+        "ограничивайся общими словами вроде «отличный ход» — назови конкретный "
+        "эффект хода, так же предметно, как объясняешь ошибки. Каждое объяснение "
+        "будет подписью под картинкой позиции в Telegram, поэтому оно должно быть "
+        "коротким — 1-3 предложения по существу, без вступлений. Для форматирования "
+        "используй **двойные звёздочки** для акцентов и `одинарные обратные кавычки` "
+        "для нотации ходов (например, `Qxf6`) — это конвертируется в HTML на нашей "
+        "стороне. Не используй заголовки, таблицы или другую разметку. Верни ровно "
+        "один объект на каждый момент из списка выше, в том же порядке — в поле "
+        '"moments".\n\n'
+        f"ЗАДАЧА 2 — точность партии по движку: {accuracy_pct:.1f}%. {summary_context}\n\n"
+        'Напиши короткую итоговую сводку партии в поле "summary" — тот блок, '
+        "которым заканчивается каждый разбор в примерах выше (после «По общей "
+        "оценке у тебя:»), и ничего больше: без вступления, без пересказа "
+        "отдельных ходов, без заключения после сводки. Сначала оценочная фраза "
+        f"вместе с процентом точности ({accuracy_pct:.1f}%), затем по одной "
+        "короткой строке (одно-два предложения, не абзац) на дебют, на тактику/"
+        "стратегию и на эндшпиль, опираясь на то, что реально было в партии. В "
+        "примерах выше эта сводка целиком — 3-5 коротких строк, ориентируйся на "
+        "тот же объём. Обычный текст, без разметки и без списков, в своей "
+        "обычной манере.\n\n"
+        f"Обе задачи пиши на языке: {lang_name}, сохраняя тот же стиль и манеру, "
+        "что в примерах выше, даже если примеры на другом языке."
+    )
+
+
+async def _generate_review_gemini(
+    caption_moments: list[CriticalMoment],
+    all_moments: list[CriticalMoment],
+    accuracy_pct: float,
+    language: str,
+) -> tuple[list[str], str, TokenUsage]:
+    """Free/Ruby/Emerald path. Same return shape as _generate_review_claude,
+    from a single Gemini call instead of N concurrent ones.
+
+    Best-effort like _warm_prompt_cache: a failed or malformed call falls
+    back to empty explanations/summary rather than raising, matching how
+    the Claude path already tolerates individual call failures (the caller
+    already has a fallback caption for mistakes and skips strength cards /
+    the summary message when the text comes back empty) — losing this one
+    call here means losing the whole review's commentary instead of just
+    one moment's, but that's the accepted trade-off of one call instead of
+    N, same as the pre-parallel Claude design this mirrors.
+    """
+    if not caption_moments:
+        return [], "", TokenUsage(0, 0, 0)
+
+    try:
+        response = await gemini_client.aio.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=_gemini_user_prompt(caption_moments, all_moments, accuracy_pct, language),
+            config=genai_types.GenerateContentConfig(
+                system_instruction=_gemini_system_instruction(),
+                max_output_tokens=_gemini_calibrated_max_tokens(len(caption_moments)),
+                # Formulaic style-mimicry, not a reasoning task — same
+                # rationale as thinking={"type": "disabled"} on the Claude
+                # path.
+                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                response_mime_type="application/json",
+                response_json_schema=_GEMINI_REVIEW_SCHEMA,
+            ),
+        )
+    except Exception:
+        return [], "", TokenUsage(0, 0, 0)
+
+    try:
+        data = json.loads(response.text)
+        explanations_by_key = {
+            (item["move_number"], item["side"]): item["explanation"] for item in data["moments"]
+        }
+        summary = data["summary"].strip()
+    except (json.JSONDecodeError, KeyError, TypeError, AttributeError):
+        explanations_by_key = {}
+        summary = ""
+
+    explanations = [explanations_by_key.get((m.move_number, m.side), "") for m in caption_moments]
+
+    usage_meta = response.usage_metadata
+    prompt_tokens = (usage_meta.prompt_token_count or 0) if usage_meta else 0
+    cached_tokens = (usage_meta.cached_content_token_count or 0) if usage_meta else 0
+    usage = TokenUsage(
+        # Gemini's prompt_token_count is the *total* prompt including any
+        # cached portion (unlike Claude's response.usage.input_tokens,
+        # which already excludes cache reads) — subtract cached_tokens here
+        # so this field keeps the same "freshly billed at full price"
+        # meaning across both providers, since it feeds the same
+        # non_cached_input_tokens log field either way.
+        input_tokens=max(0, prompt_tokens - cached_tokens),
+        output_tokens=(usage_meta.candidates_token_count or 0) if usage_meta else 0,
+        cached_tokens=cached_tokens,
+    )
+    return explanations, summary, usage
+
+
+# Tier -> API provider for review generation. Diamond is the only paid tier
+# still on Claude; Free/Ruby/Emerald all route to the cheaper batched
+# Gemini path. Falls back to "gemini" for any unrecognized tier (defensive
+# only — subscription_service.TIER_ORDER is the source of truth for valid
+# tier names and always includes these four).
+_TIER_PROVIDER = {
+    "free": "gemini",
+    "ruby": "gemini",
+    "emerald": "gemini",
+    "diamond": "claude",
+}
+
+
+def model_for_tier(tier: str) -> str:
+    """The model id actually used for a given tier's reviews — exposed so
+    the caller can log which one ran without duplicating the tier->provider
+    mapping above.
+    """
+    if _TIER_PROVIDER.get(tier, "gemini") == "claude":
+        return config.CLAUDE_MODEL
+    return config.GEMINI_MODEL
+
+
+async def generate_review(
+    caption_moments: list[CriticalMoment],
+    all_moments: list[CriticalMoment],
+    accuracy_pct: float,
+    language: str,
+    tier: str,
+) -> tuple[list[str], str, TokenUsage]:
+    """Returns (per-moment explanations for `caption_moments` in order, the
+    closing game summary grounded in `all_moments`, combined token usage).
+
+    Routes to the Claude or Gemini implementation above by `tier` — see the
+    module docstring for why each tier uses the model it does, and
+    model_for_tier if the caller also wants to log which model ran.
+    """
+    if _TIER_PROVIDER.get(tier, "gemini") == "claude":
+        return await _generate_review_claude(caption_moments, all_moments, accuracy_pct, language)
+    return await _generate_review_gemini(caption_moments, all_moments, accuracy_pct, language)

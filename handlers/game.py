@@ -24,7 +24,7 @@ from services.chess_service import (
     fetch_game_by_url,
     parse_pgn,
 )
-from services.commentary_service import generate_review
+from services.commentary_service import generate_review, model_for_tier
 from services.engine_service import EngineError, TYPE_MISTAKE, analyze_game, select_top_moments
 from services import usage_service
 from telegram_format import markdown_to_html, truncate_html
@@ -133,8 +133,12 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
         finally:
             telegram_time += time.perf_counter() - started
 
+    # Fetched unconditionally (not just for the limit check below) since
+    # it also picks the review model — an admin account still gets its own
+    # real tier's model, just without the usage-limit gate.
+    tier = await database.get_user_tier(telegram_id)
+
     if telegram_id != config.ADMIN_USER_ID:
-        tier = await database.get_user_tier(telegram_id)
         remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
         if remaining <= 0:
             if tier == usage_service.TIER_FREE:
@@ -186,7 +190,7 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     # actually produces.
     claude_started = time.perf_counter()
     explanations, summary, token_usage = await generate_review(
-        moments_for_captions, critical_moments, analysis.accuracy_pct, lang
+        moments_for_captions, critical_moments, analysis.accuracy_pct, lang, tier
     )
     claude_elapsed = time.perf_counter() - claude_started
     await database.log_token_usage(
@@ -248,14 +252,23 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
     # can legitimately exceed input_tokens here (most calls cheaply read a
     # cache that only one call had to pay to write), so they're logged as
     # separate totals rather than a "part/whole" ratio that would look wrong.
+    # claude_calls is a fixed N+1 (Diamond's per-moment + summary calls)
+    # only on the Claude path; on the Gemini path it's always 1 (single
+    # batched call) regardless of moment count — model= disambiguates which
+    # shape a given line is, and for Gemini, claude_elapsed below is that
+    # one batched call's real wall time.
+    model = model_for_tier(tier)
+    claude_calls = len(moments_for_captions) + 1 if model == config.CLAUDE_MODEL else 1
     logger.info(
-        "Review timing telegram_id=%s moments=%d claude_calls=%d: "
-        "stockfish=%.2fs claude=%.2fs (parallel, output_tokens=%d "
+        "Review timing telegram_id=%s tier=%s model=%s moments=%d claude_calls=%d: "
+        "stockfish=%.2fs claude=%.2fs (output_tokens=%d "
         "non_cached_input_tokens=%d cached_input_tokens=%d) "
         "telegram_sends=%.2fs other=%.2fs total=%.2fs",
         telegram_id,
+        tier,
+        model,
         len(moments_for_captions),
-        len(moments_for_captions) + 1,
+        claude_calls,
         stockfish_elapsed,
         claude_elapsed,
         token_usage.output_tokens,

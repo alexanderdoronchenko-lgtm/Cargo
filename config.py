@@ -11,6 +11,13 @@ BASE_DIR = Path(__file__).resolve().parent
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
+
+# Google AI Studio key for Gemini — used for Free/Ruby/Emerald review
+# generation (see services/commentary_service.py's tier->provider routing).
+# Diamond stays on Claude. Get a key at https://aistudio.google.com/apikey
+# (free Google account, no billing setup needed for the free tier itself).
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "bot.db"))
 STOCKFISH_PATH = os.getenv("STOCKFISH_PATH")
 # UCI "Threads" option — lets Stockfish search a single position with
@@ -53,3 +60,6 @@ if not BOT_TOKEN:
 
 if not ANTHROPIC_API_KEY:
     raise RuntimeError("ANTHROPIC_API_KEY is not set. Add it to your .env file.")
+
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY is not set. Add it to your .env file.")
