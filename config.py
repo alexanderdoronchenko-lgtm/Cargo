@@ -18,11 +18,16 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-5")
 # (free Google account, no billing setup needed for the free tier itself).
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 # gemini-2.5-flash was retired for new API keys ("no longer available to
-# new users" 404) — gemini-3.6-flash is the current GA Flash model as of
-# August 2026 (launched 2026-07-21). Re-check
-# https://ai.google.dev/gemini-api/docs/models if this 404s again; Google
-# has been cycling Flash generations roughly every few months.
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
+# new users" 404). gemini-3.6-flash (the GA default used until now) has a
+# tight free-tier quota; trying gemini-3-flash-preview instead — early
+# reports point to a much more generous free-tier requests/day quota and
+# lower per-token pricing, but it's a preview model, so Google can change
+# or retire it with less notice than a GA release, and preview quotas are
+# reported to shift over time too. Note the exact id: the model is NOT
+# aliased as bare "gemini-3-flash" (that 404s) — it's "-preview". Re-check
+# https://ai.google.dev/gemini-api/docs/models if this 404s or the quota
+# turns out not to hold up in practice.
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 
 # A review now fires several parallel Gemini calls (batched explanations +
 # a summary call — see services/commentary_service.py's Gemini path)

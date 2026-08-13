@@ -4,7 +4,7 @@ written in the style captured by chess_style_corpus.md.
 Model is chosen by subscription tier: Diamond uses Claude
 (claude-sonnet-5), fired as N concurrent per-moment calls (see
 _generate_review_claude). Free/Ruby/Emerald use Gemini (config.GEMINI_MODEL,
-default gemini-3.6-flash), fired as several small parallel batches of 2-3
+default gemini-3-flash-preview), fired as several small parallel batches of 2-3
 moments each plus a separate summary call (see _generate_review_gemini) —
 a failed batch only loses its own couple of moments' explanations instead
 of the whole review's commentary. All Gemini calls across the whole
