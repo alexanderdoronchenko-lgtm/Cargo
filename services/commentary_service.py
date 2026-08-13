@@ -559,25 +559,42 @@ async def _generate_review_gemini(
                 max_output_tokens=_gemini_calibrated_max_tokens(len(caption_moments)),
                 # Formulaic style-mimicry, not a reasoning task — same
                 # rationale as thinking={"type": "disabled"} on the Claude
-                # path.
-                thinking_config=genai_types.ThinkingConfig(thinking_budget=0),
+                # path. Gemini 3.x models replaced the numeric
+                # thinking_budget with the string thinking_level enum
+                # (minimal/low/medium/high) — thinking_budget=0 (the 2.5-era
+                # field) 400s as an invalid argument on gemini-3.6-flash.
+                # MINIMAL is the lowest level 3.x exposes; there's no hard
+                # "off" switch on these models the way thinking_budget=0
+                # used to be.
+                thinking_config=genai_types.ThinkingConfig(
+                    thinking_level=genai_types.ThinkingLevel.MINIMAL
+                ),
                 response_mime_type="application/json",
                 response_json_schema=_GEMINI_REVIEW_SCHEMA,
             ),
         )
-    except Exception:
+    except Exception as exc:
         # Best-effort like _warm_prompt_cache, but this failure is the
         # *whole* review's commentary, not one call among many — silently
         # returning empty here made a real API error (bad key, unknown
         # model name, rejected schema, rate limit, ...) indistinguishable
-        # from a merely-empty response in the logs. logger.exception
-        # captures the real exception + traceback, and for the SDK's own
-        # APIError subclasses that already includes the HTTP status code
-        # and response body in str(exc).
+        # from a merely-empty response in the logs.
+        #
+        # code/status/details are pulled out explicitly (not just left to
+        # logger.exception's traceback line) because google.genai.errors.
+        # APIError.details *is* the parsed response body — Google's own
+        # "invalid argument" errors don't always name the offending field
+        # in .message, but .details is the full JSON Google sent back, so
+        # surfacing it separately guarantees it's visible even if a future
+        # exception type formats str(exc) differently than APIError does.
         logger.exception(
-            "Gemini review call failed (model=%s, moments=%d) — falling back to empty explanations/summary",
+            "Gemini review call failed (model=%s, moments=%d): code=%s status=%s "
+            "details=%r — falling back to empty explanations/summary",
             config.GEMINI_MODEL,
             len(caption_moments),
+            getattr(exc, "code", None),
+            getattr(exc, "status", None),
+            getattr(exc, "details", None),
         )
         return [], "", TokenUsage(0, 0, 0)
 
