@@ -735,6 +735,22 @@ async def _resolve_gemini_cache_model() -> str:
         return resolved
 
 
+# Set the first time any caches.create() call fails, for any reason — a
+# free-tier API key gets TotalCachedContentStorageTokensPerModelFreeTier
+# limit=0 (confirmed in production on two different models), a structural
+# billing-tier restriction that retrying, or trying again on the next
+# call, never resolves. Once tripped, _get_gemini_cache short-circuits to
+# None immediately instead of repeating a doomed caches.create() attempt
+# on every single batch/summary call — before this, that was adding
+# minutes to a review's Gemini stage (5 calls x a failed creation attempt
+# each, and — see gemini_service.py — the SDK retrying every one of those
+# failures up to 5 times on its own before giving up). A rare false trip
+# from a genuinely transient failure only costs caching for the rest of
+# this process's life, not a crash — the bot already gets restarted on
+# every deploy, which clears this back to False.
+_gemini_cache_creation_unavailable = False
+
+
 async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -> str | None:
     """Returns a cached_content resource name for (kind, language),
     creating (or refreshing, once expired) it as needed. Returns None
@@ -757,6 +773,8 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
     visible in the logs rather than inferred from token counts after the
     fact.
     """
+    global _gemini_cache_creation_unavailable
+
     key = (kind, language)
     now = time.monotonic()
     entry = _gemini_cache_entries.get(key)
@@ -770,9 +788,13 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
         )
         return entry.name
 
+    if _gemini_cache_creation_unavailable:
+        return None
+
     async with _gemini_cache_locks[key]:
-        # Re-check: another coroutine may have created/refreshed this
-        # while we were waiting on the lock.
+        # Re-check: another coroutine may have created/refreshed this (or
+        # tripped the circuit breaker below) while this one waited on the
+        # lock.
         entry = _gemini_cache_entries.get(key)
         now = time.monotonic()
         if entry is not None and entry.good_until > now:
@@ -784,6 +806,8 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
                 entry.name,
             )
             return entry.name
+        if _gemini_cache_creation_unavailable:
+            return None
 
         cache_model = await _resolve_gemini_cache_model()
         logger.info(
@@ -803,6 +827,13 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
             )
         except Exception as exc:
             _log_gemini_call_failure(exc, "Gemini cache creation", kind=kind, language=language)
+            _gemini_cache_creation_unavailable = True
+            logger.warning(
+                "Disabling Gemini explicit caching for the rest of this process — caches.create() "
+                "failed (see the error above). If this is a billing/quota restriction (e.g. "
+                "TotalCachedContentStorageTokensPerModelFreeTier limit=0 on the free tier), it won't "
+                "resolve itself; restart the bot after enabling billing to try again."
+            )
             return None
 
         cached_tokens = cache.usage_metadata.total_token_count if cache.usage_metadata else None
