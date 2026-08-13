@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import (
@@ -7,6 +9,7 @@ from aiogram.types import (
     LabeledPrice,
     Message,
     PreCheckoutQuery,
+    SuccessfulPayment,
 )
 
 import config
@@ -15,6 +18,7 @@ from locales import t
 from services import subscription_service
 
 router = Router()
+logger = logging.getLogger(__name__)
 
 _TIER_NAME_KEYS = {
     "ruby": "tier_ruby",
@@ -153,6 +157,29 @@ async def process_pre_checkout(pre_checkout_query: PreCheckoutQuery) -> None:
     await pre_checkout_query.answer(ok=True)
 
 
+async def _notify_admin_of_payment(
+    message: Message, tier: str, payment: SuccessfulPayment
+) -> None:
+    # A revenue ping for the operator, separate from the buyer's own
+    # confirmation below — not run through locales/t() since it's an
+    # internal ops notification rather than user-facing interface text
+    # (tier names are still pulled from the existing locale keys, forced
+    # to "ru", rather than duplicating "Рубин"/"Изумруд"/"Алмаз" here).
+    # Best-effort: if this fails (e.g. the admin never started a chat with
+    # the bot), it must not affect the buyer's own confirmation below.
+    if config.ADMIN_USER_ID is None:
+        return
+    who = f"@{message.from_user.username}" if message.from_user.username else str(message.from_user.id)
+    tier_name_ru = t(_TIER_NAME_KEYS[tier], "ru")
+    try:
+        await message.bot.send_message(
+            config.ADMIN_USER_ID,
+            f"Новая подписка: {tier_name_ru} ({payment.total_amount} Stars) от {who}",
+        )
+    except Exception:
+        logger.exception("Failed to notify admin of a new subscription payment")
+
+
 @router.message(F.successful_payment)
 async def process_successful_payment(message: Message) -> None:
     payment = message.successful_payment
@@ -175,3 +202,5 @@ async def process_successful_payment(message: Message) -> None:
         )
     else:
         await message.answer(t("subscription_queued", lang, tier=tier_name))
+
+    await _notify_admin_of_payment(message, tier, payment)
