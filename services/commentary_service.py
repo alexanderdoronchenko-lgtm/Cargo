@@ -702,6 +702,38 @@ _GEMINI_CACHE_REFRESH_MARGIN_SECONDS = 120
 _gemini_cache_entries: dict[tuple[str, str], _GeminiCacheEntry] = {}
 _gemini_cache_locks: dict[tuple[str, str], asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 
+# caches.create() is documented to require a pinned model version rather
+# than the "latest"-style alias generate_content itself accepts fine
+# (e.g. config.GEMINI_MODEL="gemini-3.6-flash") — resolved lazily via
+# models.get() once per process and reused, instead of guessing a version
+# suffix that could itself 404. If resolution fails, falls back to using
+# config.GEMINI_MODEL as-is for cache creation (today's behavior).
+_gemini_cache_model_name: str | None = None
+_gemini_cache_model_lock = asyncio.Lock()
+
+
+async def _resolve_gemini_cache_model() -> str:
+    global _gemini_cache_model_name
+    if _gemini_cache_model_name is not None:
+        return _gemini_cache_model_name
+    async with _gemini_cache_model_lock:
+        if _gemini_cache_model_name is not None:
+            return _gemini_cache_model_name
+        try:
+            model_info = await gemini_client.aio.models.get(model=config.GEMINI_MODEL)
+            resolved = model_info.name or config.GEMINI_MODEL
+        except Exception as exc:
+            logger.warning(
+                "Could not resolve a pinned model name for Gemini caching (alias=%s): %s — "
+                "using the alias as-is for caches.create, which may itself be why caching doesn't apply",
+                config.GEMINI_MODEL,
+                exc,
+            )
+            resolved = config.GEMINI_MODEL
+        logger.info("Gemini cache model resolution: alias=%s -> %s", config.GEMINI_MODEL, resolved)
+        _gemini_cache_model_name = resolved
+        return resolved
+
 
 async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -> str | None:
     """Returns a cached_content resource name for (kind, language),
@@ -715,11 +747,27 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
     billed call, amortized across every review for the next hour — not
     paid fresh per review) while the rest wait on the lock and then reuse
     it, rather than each independently creating a redundant cache.
+
+    Logs every step (reuse / creation attempt / creation result) at INFO
+    — this mechanism has failed silently twice already (implicit caching
+    measuring 0% hit rate for reasons outside this process's visibility;
+    a first cut of explicit caching that also produced 0% hits with no
+    clear signal why), so the goal here is to make every step of "did we
+    even try, did creation succeed, how big was what we cached" directly
+    visible in the logs rather than inferred from token counts after the
+    fact.
     """
     key = (kind, language)
     now = time.monotonic()
     entry = _gemini_cache_entries.get(key)
     if entry is not None and entry.good_until > now:
+        logger.info(
+            "Reusing Gemini cache kind=%s language=%s name=%s (good for another %.0fs)",
+            kind,
+            language,
+            entry.name,
+            entry.good_until - now,
+        )
         return entry.name
 
     async with _gemini_cache_locks[key]:
@@ -728,11 +776,26 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
         entry = _gemini_cache_entries.get(key)
         now = time.monotonic()
         if entry is not None and entry.good_until > now:
+            logger.info(
+                "Reusing Gemini cache kind=%s language=%s name=%s (created by a concurrent caller "
+                "while this one waited on the lock)",
+                kind,
+                language,
+                entry.name,
+            )
             return entry.name
 
+        cache_model = await _resolve_gemini_cache_model()
+        logger.info(
+            "Creating Gemini cache kind=%s language=%s model=%s system_instruction_chars=%d",
+            kind,
+            language,
+            cache_model,
+            len(system_instruction),
+        )
         try:
             cache = await gemini_client.aio.caches.create(
-                model=config.GEMINI_MODEL,
+                model=cache_model,
                 config=genai_types.CreateCachedContentConfig(
                     system_instruction=system_instruction,
                     ttl=f"{_GEMINI_CACHE_TTL_SECONDS}s",
@@ -741,6 +804,16 @@ async def _get_gemini_cache(kind: str, language: str, system_instruction: str) -
         except Exception as exc:
             _log_gemini_call_failure(exc, "Gemini cache creation", kind=kind, language=language)
             return None
+
+        cached_tokens = cache.usage_metadata.total_token_count if cache.usage_metadata else None
+        logger.info(
+            "Created Gemini cache kind=%s language=%s name=%s cached_tokens=%s ttl=%ds",
+            kind,
+            language,
+            cache.name,
+            cached_tokens,
+            _GEMINI_CACHE_TTL_SECONDS,
+        )
 
         _gemini_cache_entries[key] = _GeminiCacheEntry(
             name=cache.name,
@@ -763,11 +836,19 @@ async def _generate_content_with_cache(
     to — or retries with — system_instruction sent directly, so a cache
     hiccup costs one extra call's worth of latency/tokens rather than
     failing the batch/summary outright.
+
+    Logs whether cached_content was actually set on the request, and
+    whether the response's own cached_content_token_count backs that up
+    — a request that sent cached_content but got 0 cached tokens back
+    means the API accepted the reference but didn't apply the discount,
+    which is a distinct failure mode from "no cache exists yet" or
+    "creation failed" and wouldn't otherwise be visible anywhere.
     """
     cache_name = await _get_gemini_cache(kind, language, system_instruction)
     if cache_name is not None:
         try:
-            return await gemini_client.aio.models.generate_content(
+            logger.info("Gemini %s call using cached_content=%s", kind, cache_name)
+            response = await gemini_client.aio.models.generate_content(
                 model=config.GEMINI_MODEL,
                 contents=contents,
                 config=genai_types.GenerateContentConfig(cached_content=cache_name, **config_kwargs),
@@ -777,7 +858,27 @@ async def _generate_content_with_cache(
                 "Gemini call with cached_content=%s failed (%s), retrying without cache", cache_name, exc
             )
             _invalidate_gemini_cache(kind, language)
+        else:
+            actual_cached = (
+                response.usage_metadata.cached_content_token_count if response.usage_metadata else None
+            )
+            if not actual_cached:
+                logger.warning(
+                    "Gemini %s call sent cached_content=%s but got cached_content_token_count=%s back "
+                    "— the API did not apply the cache",
+                    kind,
+                    cache_name,
+                    actual_cached,
+                )
+            else:
+                logger.info(
+                    "Gemini %s call confirmed cache hit: cached_content_token_count=%d",
+                    kind,
+                    actual_cached,
+                )
+            return response
 
+    logger.info("Gemini %s call using system_instruction directly (no cache available)", kind)
     return await gemini_client.aio.models.generate_content(
         model=config.GEMINI_MODEL,
         contents=contents,
