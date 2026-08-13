@@ -142,7 +142,11 @@ async def _run_review(message: Message, lang: str, game: chess.pgn.Game, user_si
         remaining = await usage_service.get_remaining_analyses(telegram_id, tier)
         if remaining <= 0:
             if tier == usage_service.TIER_FREE:
-                await send(message.answer(t("limit_exceeded_free", lang)))
+                await send(
+                    message.answer(
+                        t("limit_exceeded_free", lang, limit=usage_service.FREE_WEEKLY_LIMIT)
+                    )
+                )
             else:
                 await send(message.answer(t("limit_exceeded", lang, limit=usage_service.daily_limit(tier))))
             return

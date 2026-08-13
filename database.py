@@ -384,13 +384,17 @@ async def count_usage_last_24h(telegram_id: int, action_type: str) -> int:
         return row[0]
 
 
-async def count_usage_total(telegram_id: int, action_type: str) -> int:
-    """All-time count, no time window — used for the free tier's one-time
-    lifetime trial (see usage_service.get_remaining_analyses).
+async def count_usage_last_7d(telegram_id: int, action_type: str) -> int:
+    """Rolling 7-day count — used for the free tier's weekly limit (see
+    usage_service.get_remaining_analyses).
     """
     async with aiosqlite.connect(config.DB_PATH) as db:
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM usage WHERE telegram_id = ? AND action_type = ?",
+            """
+            SELECT COUNT(*) FROM usage
+            WHERE telegram_id = ? AND action_type = ?
+              AND timestamp >= datetime('now', '-7 days')
+            """,
             (telegram_id, action_type),
         )
         row = await cursor.fetchone()

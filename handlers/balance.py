@@ -37,7 +37,7 @@ async def cmd_balance(message: Message) -> None:
                 "balance_status_free",
                 lang,
                 remaining=remaining,
-                limit=usage_service.FREE_LIFETIME_LIMIT,
+                limit=usage_service.FREE_WEEKLY_LIMIT,
                 tier=tier_name,
             )
         )
