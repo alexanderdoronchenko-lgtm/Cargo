@@ -44,8 +44,8 @@ CLAUDE_MAX_CONCURRENT_REQUESTS = int(os.getenv("CLAUDE_MAX_CONCURRENT_REQUESTS",
 
 # Subscription prices in Telegram Stars (XTR), per month.
 RUBY_PRICE_STARS = int(os.getenv("RUBY_PRICE_STARS", "600"))
-EMERALD_PRICE_STARS = int(os.getenv("EMERALD_PRICE_STARS", "800"))
-DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "1500"))
+EMERALD_PRICE_STARS = int(os.getenv("EMERALD_PRICE_STARS", "750"))
+DIAMOND_PRICE_STARS = int(os.getenv("DIAMOND_PRICE_STARS", "3200"))
 
 # Telegram Mini App URL — must be HTTPS (Telegram rejects http://). This is
 # a placeholder until the Mini App is actually deployed; update the env var
