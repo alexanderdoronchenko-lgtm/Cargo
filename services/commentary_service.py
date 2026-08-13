@@ -670,6 +670,50 @@ def _log_gemini_call_failure(exc: Exception, what: str, **context) -> None:
     )
 
 
+async def _warm_gemini_cache(
+    language: str, on_queued: Callable[[], Awaitable[None]] | None
+) -> TokenUsage:
+    """Writes the batch system prompt's implicit-cache entry with a single
+    throwaway call *before* the real batch fan-out in _generate_review_
+    gemini, mirroring Claude's _warm_prompt_cache — same root cause: N
+    calls sharing an identical prefix, fired together via asyncio.gather,
+    can all start before any of them has finished writing a cache entry,
+    so none of them reads one. Measured in production: a 10-moment review
+    (5 calls, all racing) landed 0 cached_input_tokens and paid full price
+    for the shared system prompt 5 times over.
+
+    Unlike Claude, Gemini doesn't charge extra to *write* an implicit
+    cache entry — a miss here just costs the normal per-token price
+    rather than Claude's 2x cache-creation surcharge, so this is pure
+    upside with no penalty if it doesn't help. It also isn't a guarantee:
+    Gemini's own implicit-caching hit rate is documented as inconsistent
+    even when a prior call already wrote a matching entry, so expect this
+    to raise the cache-hit rate, not make it 100%.
+
+    max_output_tokens=1 keeps the throwaway call's own cost negligible —
+    the prefill (which is what actually writes the cache) happens
+    regardless of how little is generated after it.
+    """
+    try:
+        async with _gemini_slot(on_queued):
+            response = await gemini_client.aio.models.generate_content(
+                model=config.GEMINI_MODEL,
+                contents="warmup",
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=_gemini_batch_system_instruction(language),
+                    max_output_tokens=1,
+                    thinking_config=genai_types.ThinkingConfig(
+                        thinking_level=genai_types.ThinkingLevel.MINIMAL
+                    ),
+                ),
+            )
+    except Exception as exc:
+        _log_gemini_call_failure(exc, "Gemini cache warm-up")
+        return TokenUsage(0, 0, 0)
+
+    return _usage_from_gemini_response(response)
+
+
 async def _generate_explanations_batch_gemini(
     batch: list[CriticalMoment], language: str, on_queued: Callable[[], Awaitable[None]] | None
 ) -> tuple[dict[tuple[int, str], str], TokenUsage]:
@@ -762,18 +806,34 @@ async def _generate_review_gemini(
     _gemini_slot) — a review now makes ceil(N/3)+1 Gemini calls instead of
     1, so unbounded fan-out across simultaneous users would risk the API
     key's rate limit.
+
+    Runs a cache-warming call first (see _warm_gemini_cache) when there's
+    more than one batch, so the parallel batch calls below have a shot at
+    reading an already-written implicit-cache entry for the shared system
+    prompt instead of racing to write it themselves — without this,
+    production measured 0 cached_input_tokens across a 10-moment review's
+    5 calls (all fired via asyncio.gather at once, none could read a
+    sibling's still-in-flight write).
     """
     if not caption_moments:
         return [], "", TokenUsage(0, 0, 0)
 
     batches = _chunk_moments(caption_moments, _GEMINI_BATCH_SIZE)
+
+    total_usage = TokenUsage(0, 0, 0)
+    if len(batches) > 1:
+        # Only worth the extra call when there's more than one batch to
+        # race against — a single batch has no sibling call that could
+        # benefit from a warm cache.
+        total_usage = await _warm_gemini_cache(language, on_queued)
+
     batch_tasks = [_generate_explanations_batch_gemini(batch, language, on_queued) for batch in batches]
     summary_task = _generate_game_summary_gemini(all_moments, accuracy_pct, language, on_queued)
 
     *batch_results, (summary, summary_usage) = await asyncio.gather(*batch_tasks, summary_task)
 
+    total_usage = total_usage + summary_usage
     explanations_by_key: dict[tuple[int, str], str] = {}
-    total_usage = summary_usage
     for batch_explanations, usage in batch_results:
         explanations_by_key.update(batch_explanations)
         total_usage = total_usage + usage
@@ -815,14 +875,17 @@ def calls_for_review(tier: str, moment_count: int) -> int:
 
     Claude: one call per moment plus one summary call (_generate_review_
     claude). Gemini: ceil(moment_count / _GEMINI_BATCH_SIZE) batch calls
-    plus one summary call (_generate_review_gemini/_chunk_moments) — e.g.
-    10 moments is ceil(10/3) + 1 = 5, not 1.
+    plus one summary call, plus one cache warm-up call whenever there's
+    more than one batch (_generate_review_gemini/_chunk_moments/
+    _warm_gemini_cache) — e.g. 10 moments is ceil(10/3) + 1 + 1 = 6.
     """
     if moment_count == 0:
         return 0
     if _TIER_PROVIDER.get(tier, "gemini") == "claude":
         return moment_count + 1
-    return math.ceil(moment_count / _GEMINI_BATCH_SIZE) + 1
+    num_batches = math.ceil(moment_count / _GEMINI_BATCH_SIZE)
+    warmup = 1 if num_batches > 1 else 0
+    return num_batches + 1 + warmup
 
 
 async def generate_review(
