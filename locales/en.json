@@ -49,6 +49,7 @@
   "progress_no_data": "No critical mistakes found in the last 30 days — either you haven't reviewed a game yet, or you've been playing cleanly. Send a game to start building up stats.",
   "progress_analyzing": "Gathering your stats from the last 30 days...",
   "progress_header": "Your recurring weaknesses over the last 30 days:",
+  "progress_generation_error": "Couldn't put together a weaknesses summary right now — try again in a bit.",
   "puzzles_prompt": "Open the mini app — tactics puzzles and the opening trainer.",
   "puzzles_button": "🧩 Open trainer",
   "balance_admin": "Admin access: unlimited."

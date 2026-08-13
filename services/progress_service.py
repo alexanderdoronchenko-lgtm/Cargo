@@ -45,6 +45,15 @@ async def summarize_weaknesses(moments, language: str) -> str:
     response = await client.messages.create(
         model=config.CLAUDE_MODEL,
         max_tokens=_MAX_TOKENS,
+        # Classification + prose, not a reasoning task — same rationale as
+        # every Claude call in commentary_service.py. This was the one
+        # call left without it (this file predates that fix), and without
+        # it the model can spend the whole max_tokens budget on invisible
+        # thinking with nothing left for visible output — response.content
+        # then has no "text" blocks at all, so the join below silently
+        # returns "" instead of raising, and the bot posts the
+        # progress_header with a blank body after it.
+        thinking={"type": "disabled"},
         system=build_system_prompt(),
         messages=[{"role": "user", "content": user_prompt}],
     )
