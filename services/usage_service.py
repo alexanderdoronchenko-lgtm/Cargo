@@ -5,6 +5,7 @@ import database
 
 ACTION_ANALYSIS = "game_analysis"
 ACTION_CRITICAL_MOMENT = "critical_moment"
+ACTION_PROGRESS_SUMMARY = "progress_summary"
 
 TIER_FREE = "free"
 TIER_RUBY = "ruby"
@@ -27,6 +28,15 @@ DAILY_LIMITS = {
 }
 
 
+# /progress (recurring-weaknesses summary) is an auxiliary feature, not
+# the core game-review product it's grounded in — flat across every tier
+# (not tier-scaled like DAILY_LIMITS) and deliberately low, since unlike a
+# game review it has no engine-analysis step to naturally throttle repeat
+# calls: it's a single LLM call over already-logged moments, so nothing
+# else bounds how often it could otherwise be spammed.
+PROGRESS_DAILY_LIMIT = 4
+
+
 def daily_limit(tier: str) -> int:
     """The per-day limit for a paid tier. Not meaningful for the free tier
     — see FREE_WEEKLY_LIMIT instead.
@@ -44,6 +54,15 @@ async def get_remaining_analyses(telegram_id: int, tier: str) -> int:
 
 async def record_analysis(telegram_id: int) -> None:
     await database.log_usage(telegram_id, ACTION_ANALYSIS)
+
+
+async def get_remaining_progress_summaries(telegram_id: int) -> int:
+    used = await database.count_usage_last_24h(telegram_id, ACTION_PROGRESS_SUMMARY)
+    return max(0, PROGRESS_DAILY_LIMIT - used)
+
+
+async def record_progress_summary(telegram_id: int) -> None:
+    await database.log_usage(telegram_id, ACTION_PROGRESS_SUMMARY)
 
 
 async def record_critical_moment(

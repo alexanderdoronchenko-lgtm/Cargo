@@ -1112,3 +1112,73 @@ async def generate_review(
     if _TIER_PROVIDER.get(tier, "gemini") == "claude":
         return await _generate_review_claude(caption_moments, all_moments, accuracy_pct, language)
     return await _generate_review_gemini(caption_moments, all_moments, accuracy_pct, language, on_queued)
+
+
+# --- /progress weaknesses-summary routing (all tiers) --------------------
+#
+# One flat request (a single text summary, no per-moment captions), but
+# routed through the same _TIER_PROVIDER split as generate_review and the
+# same Claude/Gemini plumbing (semaphore, rate limiter, explicit cache) —
+# so its calls count against the same shared rate limits as game reviews
+# instead of opening a second, unbounded set of Claude/Gemini requests.
+
+_PROGRESS_CLAUDE_MAX_TOKENS = 4096
+_PROGRESS_GEMINI_MAX_TOKENS = 1024
+
+
+async def _summarize_weaknesses_claude(prompt: str) -> tuple[str, TokenUsage]:
+    async with _claude_semaphore:
+        response = await client.messages.create(
+            model=config.CLAUDE_MODEL,
+            max_tokens=_PROGRESS_CLAUDE_MAX_TOKENS,
+            # Classification + prose, not a reasoning task — same rationale
+            # as every other Claude call in this module.
+            thinking={"type": "disabled"},
+            system=build_system_prompt(),
+            messages=[{"role": "user", "content": prompt}],
+        )
+    summary = "".join(block.text for block in response.content if block.type == "text").strip()
+    usage = TokenUsage(
+        input_tokens=response.usage.input_tokens + response.usage.cache_creation_input_tokens,
+        output_tokens=response.usage.output_tokens,
+        cached_tokens=response.usage.cache_read_input_tokens,
+    )
+    return summary, usage
+
+
+async def _summarize_weaknesses_gemini(prompt: str, language: str) -> tuple[str, TokenUsage]:
+    # kind="summary" deliberately reuses the same explicit-cache entry the
+    # per-game closing summary already creates (_generate_game_summary_
+    # gemini) — both send the identical role+style+corpus system prompt,
+    # so a /progress call and a game review within the same hour share one
+    # cache write instead of paying for two.
+    try:
+        async with _gemini_slot(None):
+            response = await _generate_content_with_cache(
+                kind="summary",
+                language=language,
+                system_instruction=_gemini_system_instruction(),
+                contents=prompt,
+                max_output_tokens=_PROGRESS_GEMINI_MAX_TOKENS,
+                thinking_config=genai_types.ThinkingConfig(
+                    thinking_level=genai_types.ThinkingLevel.MINIMAL
+                ),
+            )
+    except Exception as exc:
+        _log_gemini_call_failure(exc, "Gemini progress summary call")
+        return "", TokenUsage(0, 0, 0)
+
+    summary = (response.text or "").strip()
+    return summary, _usage_from_gemini_response(response)
+
+
+async def generate_progress_summary(prompt: str, language: str, tier: str) -> tuple[str, TokenUsage]:
+    """Routes /progress's recurring-weaknesses summary by the same
+    tier->provider split as generate_review (see _TIER_PROVIDER): Diamond
+    stays on Claude, Free/Ruby/Emerald go through the Gemini path —
+    instead of always using Claude regardless of tier, which is what this
+    used to do.
+    """
+    if _TIER_PROVIDER.get(tier, "gemini") == "claude":
+        return await _summarize_weaknesses_claude(prompt)
+    return await _summarize_weaknesses_gemini(prompt, language)

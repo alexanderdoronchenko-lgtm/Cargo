@@ -1,16 +1,14 @@
 """Classifies a user's critical moments from the last 30 days into recurring
 weakness categories (tactics / endgame / opening / positional understanding)
-and summarizes the top-3 in plain text, via the Claude API (model:
-claude-sonnet-5). Reuses commentary_service's coach persona and cached style
-corpus so the voice stays consistent with per-game reviews.
+and summarizes the top-3 in plain text. Routed by subscription tier through
+commentary_service.generate_progress_summary — Diamond via Claude,
+Free/Ruby/Emerald via Gemini, the same split game reviews use — and reuses
+commentary_service's coach persona and cached style corpus so the voice
+stays consistent with per-game reviews.
 """
-import config
-from services.claude_service import client
-from services.commentary_service import build_system_prompt
+from services.commentary_service import TokenUsage, generate_progress_summary
 
 _LANGUAGE_NAMES = {"ru": "русском", "en": "английском"}
-
-_MAX_TOKENS = 4096
 
 
 def _format_moments(moments) -> str:
@@ -23,14 +21,9 @@ def _format_moments(moments) -> str:
     return "\n".join(lines)
 
 
-async def summarize_weaknesses(moments, language: str) -> str:
-    """Classifies the given critical moments into tactics/endgame/opening/
-    positional categories in one call and returns a plain-text summary of
-    the top-3 most recurring ones.
-    """
+def _build_prompt(moments, language: str) -> str:
     lang_name = _LANGUAGE_NAMES.get(language, _LANGUAGE_NAMES["en"])
-
-    user_prompt = (
+    return (
         "Вот все критические ошибки ученика за последние 30 дней, из разных "
         f"партий:\n\n{_format_moments(moments)}\n\n"
         "Классифицируй каждую ошибку по одной из категорий: тактика, эндшпиль, "
@@ -42,19 +35,12 @@ async def summarize_weaknesses(moments, language: str) -> str:
         "другом языке."
     )
 
-    response = await client.messages.create(
-        model=config.CLAUDE_MODEL,
-        max_tokens=_MAX_TOKENS,
-        # Classification + prose, not a reasoning task — same rationale as
-        # every Claude call in commentary_service.py. This was the one
-        # call left without it (this file predates that fix), and without
-        # it the model can spend the whole max_tokens budget on invisible
-        # thinking with nothing left for visible output — response.content
-        # then has no "text" blocks at all, so the join below silently
-        # returns "" instead of raising, and the bot posts the
-        # progress_header with a blank body after it.
-        thinking={"type": "disabled"},
-        system=build_system_prompt(),
-        messages=[{"role": "user", "content": user_prompt}],
-    )
-    return "".join(block.text for block in response.content if block.type == "text")
+
+async def summarize_weaknesses(moments, language: str, tier: str) -> tuple[str, TokenUsage]:
+    """Classifies the given critical moments into tactics/endgame/opening/
+    positional categories in one call and returns a plain-text summary of
+    the top-3 most recurring ones, via whichever provider `tier` routes to
+    (see commentary_service.generate_progress_summary).
+    """
+    prompt = _build_prompt(moments, language)
+    return await generate_progress_summary(prompt, language, tier)

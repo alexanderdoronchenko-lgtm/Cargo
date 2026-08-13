@@ -28,6 +28,7 @@
   "moment_fallback_caption": "Move {move_number}: `{move_san}` (loss {cp_loss} cp).",
   "limit_exceeded": "You've reached today's game analysis limit ({limit} per day). Subscribe or upgrade your plan — /subscribe.",
   "limit_exceeded_free": "You've reached this week's free game analysis limit ({limit} per week). Subscribe to keep analyzing games without limits — /subscribe.",
+  "progress_limit_exceeded": "You've reached today's weaknesses summary limit ({limit} per day). Try again tomorrow.",
   "balance_status": "Game analyses left today: {remaining} of {limit}.\nCurrent plan: {tier}.",
   "balance_status_free": "Free game analyses left: {remaining} of {limit} over the last 7 days.\nCurrent plan: {tier}.",
   "tier_free": "Free",
